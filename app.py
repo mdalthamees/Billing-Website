@@ -849,6 +849,7 @@ def reports():
         monthly=[dict(x) for x in c.execute("SELECT strftime('%Y-%m',created_at) month,SUM(total) total FROM bills GROUP BY month ORDER BY month DESC LIMIT 12")]
     return render_template("reports.html",categories=categories,tops=tops,monthly=monthly)
 
+init_db()
+
 if __name__ == "__main__":
-    init_db()
     app.run(host="127.0.0.1",port=5000,debug=True)
