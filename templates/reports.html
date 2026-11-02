@@ -1,0 +1,7 @@
+{% extends "base.html" %}{% block content %}<div class="page-head"><div><h1>Reports & Analytics</h1><p>Category performance and top-selling products</p></div></div>
+<div class="grid-two"><section class="panel"><h5>Category-wise Sales</h5><canvas id="catChart"></canvas></section><section class="panel"><h5>Monthly Sales</h5><canvas id="monthChart"></canvas></section></div>
+<div class="panel mt-3"><h5>Top Selling Products</h5><div class="table-responsive"><table class="table mobile-card-table"><thead><tr><th>Product</th><th>Quantity Sold</th><th>Sales</th></tr></thead><tbody>{% for p in tops %}<tr><td data-label="Product">{{p.product_name}}</td><td data-label="Quantity Sold">{{p.qty}}</td><td data-label="Sales">₹{{'%.2f'|format(p.total)}}</td></tr>{% else %}<tr><td colspan="3">No sales yet.</td></tr>{% endfor %}</tbody></table></div></div>
+{% endblock %}{% block scripts %}<script src="https://cdn.jsdelivr.net/npm/chart.js"></script><script>
+new Chart(document.getElementById('catChart'),{type:'doughnut',data:{labels:{{categories|map(attribute='category')|list|tojson}},datasets:[{data:{{categories|map(attribute='total')|list|tojson}}}]},options:{responsive:true}});
+new Chart(document.getElementById('monthChart'),{type:'bar',data:{labels:{{monthly|map(attribute='month')|list|reverse|list|tojson}},datasets:[{label:'Sales ₹',data:{{monthly|map(attribute='total')|list|reverse|list|tojson}},backgroundColor:'#b5122b'}]},options:{responsive:true}});
+</script>{% endblock %}

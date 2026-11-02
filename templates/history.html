@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <div><h1>History & Excel</h1><p>Current records plus a permanent log of additions, edits and deletions</p></div>
+  <a class="btn btn-danger" href="{{ url_for('export_history') }}">Download complete Excel</a>
+</div>
+<div class="stats history-stats">
+  <div class="stat"><span>History events</span><strong>{{ total_events }}</strong><small>Includes archived deletions</small></div>
+  <div class="stat"><span>Current products</span><strong>{{ counts.products }}</strong><small>Full records in Excel</small></div>
+  <div class="stat"><span>Current customers</span><strong>{{ counts.customers }}</strong><small>Full records in Excel</small></div>
+  <div class="stat"><span>Current bills</span><strong>{{ counts.bills }}</strong><small>Bill headers and line items are separate sheets</small></div>
+  <div class="stat"><span>Current bill items</span><strong>{{ counts.bill_items }}</strong><small>Product, quantity and price details</small></div>
+  <div class="stat"><span>Current payments</span><strong>{{ counts.payments }}</strong><small>Payment date, amount and method</small></div>
+  <div class="stat"><span>Current stock movements</span><strong>{{ counts.stock_movements }}</strong><small>Deleted movements remain in the activity log</small></div>
+</div>
+<section class="panel">
+  <div class="section-head"><h5>Latest activity</h5><span class="muted">Showing the latest 100 events. Excel includes the complete history.</span></div>
+  <div class="table-responsive">
+    <table class="table mobile-card-table align-middle">
+      <thead><tr><th>Date & time</th><th>Action</th><th>Record type</th><th>Reference</th><th>Saved details</th></tr></thead>
+      <tbody>
+      {% for event in events %}
+        <tr>
+          <td data-label="Date & time">{{ event.created_at }}</td>
+          <td data-label="Action">{{ event.action|title }}</td>
+          <td data-label="Record type">{{ event.entity_type|title }}</td>
+          <td data-label="Reference">{{ event.reference or event.entity_id }}</td>
+          <td data-label="Saved details"><details class="history-details"><summary>View snapshot</summary><pre>{{ event.details_json }}</pre></details></td>
+        </tr>
+      {% else %}
+        <tr><td colspan="5" class="text-center muted">No new activity has been recorded yet. Existing records are included in the Excel workbook.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

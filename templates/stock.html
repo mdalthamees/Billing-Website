@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <div><h1>Stock Maintenance</h1><p>Track quantities, record stock movements and review alerts</p></div>
+  <a class="btn btn-danger" href="#stock-movement">＋ Record movement</a>
+</div>
+
+<div class="stats stock-stats">
+  <div class="stat"><span>Total Products</span><strong>{{stock_stats.total_products}}</strong><small>Product variants</small></div>
+  <div class="stat"><span>Total Stock Quantity</span><strong>{{stock_stats.total_stock_quantity}}</strong><small>Opening stock plus additions</small></div>
+  <div class="stat"><span>Total Products Sold</span><strong>{{stock_stats.total_products_sold}}</strong><small>From recorded bills</small></div>
+  <div class="stat"><span>Available Stock</span><strong>{{stock_stats.available_stock}}</strong><small>Units currently on hand</small></div>
+  <div class="stat"><span>Low Stock Products</span><strong>{{stock_stats.low_stock_products}}</strong><small>At or below {{minimum_stock}} units</small></div>
+  <div class="stat"><span>Out of Stock Products</span><strong>{{stock_stats.out_of_stock_products}}</strong><small>Unavailable for billing</small></div>
+</div>
+
+{% if stock_stats.low_stock_products or stock_stats.out_of_stock_products %}
+<div class="stock-alert" role="status">
+  <b>Stock alerts</b>
+  {% if stock_stats.low_stock_products %}<span>{{stock_stats.low_stock_products}} low-stock product{{'' if stock_stats.low_stock_products==1 else 's'}}</span>{% endif %}
+  {% if stock_stats.out_of_stock_products %}<span>{{stock_stats.out_of_stock_products}} out-of-stock product{{'' if stock_stats.out_of_stock_products==1 else 's'}}</span>{% endif %}
+</div>
+{% endif %}
+
+<div class="stock-tools">
+  <section class="panel stock-form-panel" id="stock-movement">
+    <h5>Record stock in / out</h5>
+    <form method="post" action="{{url_for('stock_movement')}}" class="row g-2">
+      <div class="col-md-5"><label class="form-label" for="movement-product">Product</label>
+        <select class="form-select" name="product_id" id="movement-product" required>
+          <option value="">Select a product</option>
+          {% for p in stock_options %}<option value="{{p.id}}">{{p.name}} · {{p.code}} · {{p.stock}} available</option>{% endfor %}
+        </select>
+      </div>
+      <div class="col-6 col-md-2"><label class="form-label" for="movement-type">Movement</label>
+        <select class="form-select" name="movement_type" id="movement-type" required><option value="stock_in">Stock In</option><option value="stock_out">Stock Out</option></select>
+      </div>
+      <div class="col-6 col-md-2"><label class="form-label" for="movement-quantity">Quantity</label>
+        <input class="form-control" type="number" name="quantity" id="movement-quantity" min="1" step="1" required>
+      </div>
+      <div class="col-md-3"><label class="form-label" for="movement-note">Note</label>
+        <input class="form-control" name="note" id="movement-note" maxlength="160" placeholder="Optional reason">
+      </div>
+      <div class="col-12"><button class="btn btn-danger w-100 w-md-auto">Save movement</button></div>
+    </form>
+  </section>
+  <section class="panel stock-threshold-panel">
+    <h5>Low-stock alert</h5>
+    <form method="post" action="{{url_for('stock_settings')}}" class="threshold-form">
+      <label class="form-label" for="minimum-stock">Alert when available stock is at or below</label>
+      <div class="d-flex gap-2"><input class="form-control" type="number" name="minimum_stock" id="minimum-stock" min="0" step="1" value="{{minimum_stock}}" required>
+        <button class="btn btn-outline-dark">Save</button></div>
+    </form>
+  </section>
+</div>
+
+<section class="panel mt-3">
+  <div class="section-head stock-table-head"><div><h5>Product stock</h5><p>Remaining stock reflects the current inventory database</p></div></div>
+  <form class="row g-2 stock-filter" method="get" action="{{url_for('stock_maintenance')}}">
+    <div class="col-md-6"><label class="visually-hidden" for="stock-search">Search products</label><input id="stock-search" class="form-control" name="q" value="{{q}}" placeholder="Search name, SKU, category or size"></div>
+    <div class="col-8 col-md-3"><label class="visually-hidden" for="stock-department">Filter category</label><select id="stock-department" class="form-select" name="department"><option value="">All categories</option><option value="Dress" {% if department=='Dress' %}selected{% endif %}>Dress</option><option value="Footwear" {% if department=='Footwear' %}selected{% endif %}>Footwear</option></select></div>
+    <div class="col-4 col-md-2"><button class="btn btn-dark w-100">Filter</button></div>
+    {% if q or department %}<div class="col-auto"><a class="btn btn-outline-secondary" href="{{url_for('stock_maintenance')}}">Clear</a></div>{% endif %}
+  </form>
+  <div class="table-responsive stock-table-wrap">
+    <table class="table align-middle mobile-card-table stock-table">
+      <thead><tr><th>Product Name</th><th>Product Image</th><th>Product ID / SKU</th><th>Category</th><th>Size</th><th>Total Stock Added</th><th>Total Quantity Sold</th><th>Remaining Stock</th><th>Stock Status</th><th>Action</th></tr></thead>
+      <tbody>
+      {% for p in products %}
+        <tr>
+          <td data-label="Product Name"><b>{{p.name}}</b></td>
+          <td data-label="Product Image">{% if p.image %}<img class="stock-product-image" src="{{url_for('static',filename='uploads/'+p.image)}}" alt="{{p.name}}">{% else %}<span class="stock-image-fallback" aria-label="No product image">—</span>{% endif %}</td>
+          <td data-label="Product ID / SKU">{{p.code}}</td>
+          <td data-label="Category">{{p.department}}</td>
+          <td data-label="Size">{{p.size or 'One size'}}</td>
+          <td data-label="Total Stock Added">{{p.total_stock_added}}</td>
+          <td data-label="Total Quantity Sold">{{p.quantity_sold}}</td>
+          <td data-label="Remaining Stock"><b>{{p.stock}}</b></td>
+          <td data-label="Stock Status">{% if p.stock==0 %}<span class="stock-status is-out">Out of stock</span>{% elif p.stock<=minimum_stock %}<span class="stock-status is-low">Low stock</span>{% else %}<span class="stock-status is-available">In stock</span>{% endif %}</td>
+          <td data-label="Action"><a class="btn btn-sm btn-outline-dark" href="{{url_for('products',q=p.code)}}">Edit</a></td>
+        </tr>
+      {% else %}
+        <tr><td colspan="10" class="stock-empty">No products match your filters.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel mt-3">
+  <div class="section-head"><div><h5>Stock movement history</h5><p>Latest 100 recorded additions, removals and sales</p></div></div>
+  <div class="table-responsive">
+    <table class="table align-middle mobile-card-table">
+      <thead><tr><th>Date</th><th>Product</th><th>SKU</th><th>Movement</th><th>Quantity</th><th>Note / Bill</th><th>Action</th></tr></thead>
+      <tbody>
+      {% for movement in movements %}
+        <tr>
+          <td data-label="Date">{{movement.created_at}}</td><td data-label="Product">{{movement.display_name}}</td>
+          <td data-label="SKU">{{movement.display_code}}</td>
+          <td data-label="Movement">{{movement.movement_type|replace('_',' ')|title}}</td>
+          <td data-label="Quantity">{{'−' if movement.movement_type in ['stock_out','sale','adjustment_out'] else '+'}}{{movement.quantity}}</td>
+          <td data-label="Note / Bill">{{movement.note or '—'}}{% if movement.bill_id %} · Bill #{{movement.bill_id}}{% endif %}</td>
+          <td data-label="Action">
+            {% if movement.movement_type in ['opening','stock_in','stock_out','adjustment_in','adjustment_out'] %}
+            <form method="post" action="{{url_for('stock_movement_delete',movement_id=movement.id)}}" onsubmit="return confirm('Delete this stock movement and reverse its quantity? Deletion is blocked if the units are no longer available.')"><button class="btn btn-sm btn-outline-danger">Delete</button></form>
+            {% elif movement.bill_id %}
+            <a class="btn btn-sm btn-outline-dark" href="{{url_for('receipt',bid=movement.bill_id)}}">View bill</a>
+            {% else %}<span class="text-muted small">Protected</span>{% endif %}
+          </td>
+        </tr>
+      {% else %}
+        <tr><td colspan="7" class="stock-empty">No stock movements have been recorded.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

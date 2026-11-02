@@ -1,0 +1,26 @@
+{% extends "base.html" %}{% block content %}
+<div class="page-head"><div><h1>Dashboard</h1><p>Shop performance at a glance</p></div><a class="btn btn-danger" href="{{url_for('billing')}}">＋ Create Bill</a></div>
+<div class="stats">
+<div class="stat"><span>Today's Sales</span><strong>₹{{'%.2f'|format(today.sales)}}</strong><small>{{today.bills}} bills today</small></div>
+<div class="stat"><span>This Month</span><strong>₹{{'%.2f'|format(month)}}</strong><small>Monthly revenue</small></div>
+<div class="stat"><span>Products</span><strong>{{products}}</strong><small>Product variants</small></div>
+<div class="stat"><span>Customers</span><strong>{{customers}}</strong><small>Registered customers</small></div>
+<div class="stat"><span>Stock Value</span><strong>₹{{'%.0f'|format(stock_value)}}</strong><small>At purchase price</small></div>
+<div class="stat"><span>Pending Balance</span><strong class="text-danger">₹{{'%.2f'|format(pending)}}</strong><small>Customer dues</small></div></div>
+<section class="stock-dashboard-section">
+<div class="section-head stock-dashboard-head"><div><h5>Stock maintenance</h5><p>Live inventory totals and alerts</p></div><a class="btn btn-outline-dark btn-sm" href="{{url_for('stock_maintenance')}}">Manage stock</a></div>
+<div class="stats stock-stats">
+<div class="stat"><span>Total Products</span><strong>{{stock_stats.total_products}}</strong><small>Product variants</small></div>
+<div class="stat"><span>Total Stock Quantity</span><strong>{{stock_stats.total_stock_quantity}}</strong><small>Opening stock plus additions</small></div>
+<div class="stat"><span>Total Products Sold</span><strong>{{stock_stats.total_products_sold}}</strong><small>From recorded bills</small></div>
+<div class="stat"><span>Available Stock</span><strong>{{stock_stats.available_stock}}</strong><small>Units currently on hand</small></div>
+<div class="stat"><span>Low Stock Products</span><strong>{{stock_stats.low_stock_products}}</strong><small>At or below {{minimum_stock}} units</small></div>
+<div class="stat"><span>Out of Stock Products</span><strong>{{stock_stats.out_of_stock_products}}</strong><small>Unavailable for billing</small></div>
+</div></section>
+<div class="grid-two"><section class="panel"><h5>Last 7 Days Sales</h5><canvas id="salesChart" height="180"></canvas></section><section class="panel"><h5>Low Stock Alerts</h5>
+{% for p in low %}<div class="list-row"><span>{{p.name}} <small>{{p.size}} / {{p.colour}}</small></span><b class="text-danger">{{p.stock}} left</b></div>{% else %}<p class="muted">No low-stock products.</p>{% endfor %}
+{% if stock_stats.out_of_stock_products %}<div class="stock-alert" role="status">{{stock_stats.out_of_stock_products}} product{{'' if stock_stats.out_of_stock_products==1 else 's'}} out of stock. <a href="{{url_for('stock_maintenance')}}">Review inventory</a></div>{% endif %}</section></div>
+<section class="panel mt-3"><div class="section-head"><h5>Recent Bills</h5><a href="{{url_for('sales')}}">View all</a></div><div class="table-responsive"><table class="table mobile-card-table"><thead><tr><th>Bill</th><th>Customer</th><th>Date</th><th>Total</th><th>Status</th></tr></thead><tbody>{% for b in recent %}<tr><td data-label="Bill"><a href="{{url_for('receipt',bid=b.id)}}">{{b.bill_no}}</a></td><td data-label="Customer">{{b.customer_name or 'Walk-in'}}</td><td data-label="Date">{{b.created_at}}</td><td data-label="Total">₹{{'%.2f'|format(b.total)}}</td><td data-label="Status">{{b.payment_status}}</td></tr>{% else %}<tr><td colspan="5">No bills yet.</td></tr>{% endfor %}</tbody></table></div></section>
+{% endblock %}{% block scripts %}<script src="https://cdn.jsdelivr.net/npm/chart.js"></script><script>
+new Chart(document.getElementById('salesChart'),{type:'line',data:{labels:{{chart|map(attribute='d')|list|tojson}},datasets:[{label:'Sales ₹',data:{{chart|map(attribute='total')|list|tojson}},borderColor:'#b5122b',backgroundColor:'rgba(181,18,43,.1)',fill:true,tension:.35}]},options:{responsive:true,plugins:{legend:{display:false}}}});
+</script>{% endblock %}

@@ -1,0 +1,360 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head no-print">
+  <div>
+    <h1>Bill Receipt</h1>
+    <p>{{ bill.bill_no }} · {{ bill.created_at }}</p>
+  </div>
+  <a class="btn btn-outline-dark" href="{{ url_for('billing') }}">＋ New Bill</a>
+</div>
+
+<section class="receipt" id="receipt" aria-label="Sales receipt">
+  <header class="receipt-head">
+    {% if shop.logo %}
+    <img src="{{ url_for('static', filename='uploads/' + shop.logo) }}" class="receipt-logo" alt="{{ shop.shop_name }} logo">
+    {% else %}
+    <div class="logo-text receipt-logo-fallback" aria-label="{{ shop.shop_name }} logo">HI-5</div>
+    {% endif %}
+    <h2>{{ shop.shop_name }}</h2>
+    <p>{{ shop.address }}</p>
+    {% if shop.phone %}<p>{{ shop.phone }}</p>{% endif %}
+    <div class="receipt-title">SALES RECEIPT</div>
+  </header>
+
+  <div class="receipt-meta">
+    <span><b>Bill No:</b> {{ bill.bill_no }}</span>
+    <span><b>Date:</b> {{ bill.created_at }}</span>
+    <span><b>Customer:</b> {{ bill.customer_name or 'Walk-in Customer' }}</span>
+    <span><b>Phone:</b> {{ bill.customer_phone or '—' }}</span>
+  </div>
+
+  <table class="table receipt-table mobile-card-table">
+    <thead><tr><th>Item</th><th>Qty</th><th>Price</th><th>Total</th></tr></thead>
+    <tbody>
+      {% for item in items %}
+      <tr>
+        <td data-label="Item">{{ item.product_name }}<small class="d-block">{{ item.category }} · {{ item.size }} · {{ item.colour }}</small></td>
+        <td data-label="Qty">{{ item.quantity }}</td>
+        <td data-label="Price">₹{{ '%.2f'|format(item.price) }}</td>
+        <td data-label="Total">₹{{ '%.2f'|format(item.line_total) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div class="receipt-totals">
+    <div><span>Subtotal</span><b>₹{{ '%.2f'|format(bill.subtotal) }}</b></div>
+    <div><span>Discount</span><b>− ₹{{ '%.2f'|format(bill.discount) }}</b></div>
+    <div class="grand"><span>Total</span><b>₹{{ '%.2f'|format(bill.total) }}</b></div>
+    <div><span>Received</span><b>₹{{ '%.2f'|format(bill.received) }}</b></div>
+    <div><span>Balance Due</span><b>₹{{ '%.2f'|format(bill.balance) }}</b></div>
+    <div><span>Payment</span><b>{{ bill.payment_method }} · {{ bill.payment_status }}</b></div>
+  </div>
+
+  <footer class="thanks">Thank you for shopping with us!<br>We look forward to seeing you again.</footer>
+</section>
+
+<div class="receipt-actions d-flex flex-wrap gap-2 justify-content-center my-3 no-print">
+  <button class="btn btn-dark" type="button" onclick="window.print()">Print Receipt</button>
+  <button class="btn btn-success" id="share-receipt" type="button" onclick="shareWhatsApp()">Share Receipt Image</button>
+  <button class="btn btn-outline-success" type="button" onclick="downloadReceiptImage()">Download Bill Image</button>
+  <form method="post" action="{{url_for('bill_delete',bid=bill.id)}}" onsubmit="return confirm('Delete this bill, its payments and sale history? Sold quantities will be returned to stock.')">
+    <button class="btn btn-outline-danger" type="submit">Delete bill</button>
+  </form>
+</div>
+<p class="receipt-share-status no-print" id="receipt-share-status" role="status" aria-live="polite"></p>
+<p class="receipt-share-status no-print">Image sharing opens your device's share options. Choose WhatsApp and the +91 8667579407 conversation. WhatsApp does not allow websites to preselect a recipient or attach an image through a share link.</p>
+
+{% if bill.balance > 0 %}
+<div class="panel no-print">
+  <h5>Record Later Payment</h5>
+  <form method="post" action="{{ url_for('add_payment', bid=bill.id) }}" class="row g-2">
+    <div class="col-6"><input name="amount" type="number" min="0.01" max="{{ bill.balance }}" step="0.01" class="form-control" placeholder="Amount received" required></div>
+    <div class="col-4"><select name="method" class="form-select"><option>Cash</option><option>UPI</option><option>Card</option></select></div>
+    <div class="col-2"><button class="btn btn-danger">Save</button></div>
+  </form>
+</div>
+{% endif %}
+{% if payments %}
+<section class="panel no-print mt-3">
+  <h5>Payment history</h5>
+  <div class="table-responsive">
+    <table class="table mobile-card-table">
+      <thead><tr><th>Date</th><th>Method</th><th>Amount</th><th>Action</th></tr></thead>
+      <tbody>{% for payment in payments %}
+        <tr>
+          <td data-label="Date">{{payment.created_at}}</td>
+          <td data-label="Method">{{payment.method}}</td>
+          <td data-label="Amount">₹{{'%.2f'|format(payment.amount)}}</td>
+          <td data-label="Action"><form method="post" action="{{url_for('payment_delete',payment_id=payment.id)}}" onsubmit="return confirm('Delete this payment and recalculate the bill balance?')"><button class="btn btn-sm btn-outline-danger">Delete payment</button></form></td>
+        </tr>
+      {% endfor %}</tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='receipt-sharing.js') }}"></script>
+<script>
+const receiptItems = [
+  {% for item in items %}
+  {
+    name: {{ item.product_name|tojson }},
+    category: {{ item.category|tojson }},
+    size: {{ item.size|tojson }},
+    colour: {{ item.colour|tojson }},
+    quantity: {{ item.quantity|tojson }},
+    price: {{ item.price|tojson }},
+    total: {{ item.line_total|tojson }}
+  }{% if not loop.last %},{% endif %}
+  {% endfor %}
+];
+const receiptData = {
+  shopName: {{ shop.shop_name|tojson }},
+  address: {{ shop.address|tojson }},
+  shopPhone: {{ shop.phone|tojson }},
+  logoUrl: {{ (url_for('static', filename='uploads/' + shop.logo) if shop.logo else '')|tojson }},
+  billNumber: {{ bill.bill_no|tojson }},
+  date: {{ bill.created_at|tojson }},
+  customerName: {{ (bill.customer_name or 'Walk-in Customer')|tojson }},
+  customerPhone: {{ (bill.customer_phone or '—')|tojson }},
+  subtotal: {{ bill.subtotal|tojson }},
+  discount: {{ bill.discount|tojson }},
+  total: {{ bill.total|tojson }},
+  received: {{ bill.received|tojson }},
+  balance: {{ bill.balance|tojson }},
+  paymentMethod: {{ bill.payment_method|tojson }},
+  paymentStatus: {{ bill.payment_status|tojson }}
+};
+const shareStatus = document.getElementById("receipt-share-status");
+
+function setShareStatus(message, isError) {
+  shareStatus.textContent = message;
+  shareStatus.classList.toggle("is-error", Boolean(isError));
+}
+
+function receiptImageFile() {
+  const width = 960;
+  const padding = 64;
+  const contentWidth = width - padding * 2;
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = 1;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Your browser could not create the receipt image.");
+
+  function wrapText(text, font, maxWidth) {
+    context.font = font;
+    const words = String(text || "").split(/\s+/).filter(Boolean);
+    if (!words.length) return [""];
+    const lines = [];
+    let line = words[0];
+    for (const word of words.slice(1)) {
+      const candidate = line + " " + word;
+      if (context.measureText(candidate).width > maxWidth && line) {
+        lines.push(line);
+        line = word;
+      } else {
+        line = candidate;
+      }
+    }
+    lines.push(line);
+    return lines;
+  }
+
+  const layout = [];
+  let y = 44;
+  const logo = document.querySelector(".receipt-logo");
+  if (logo && logo.complete && logo.naturalWidth) {
+    const scale = Math.min(120 / logo.naturalWidth, 88 / logo.naturalHeight);
+    layout.push({ type: "logo", image: logo, x: (width - logo.naturalWidth * scale) / 2, y, width: logo.naturalWidth * scale, height: logo.naturalHeight * scale });
+    y += 108;
+  } else {
+    layout.push({ type: "fallback-logo", x: width / 2, y: y + 34 });
+    y += 88;
+  }
+
+  function addCentered(text, font, color, lineHeight, maxWidth) {
+    const lines = wrapText(text, font, maxWidth || contentWidth);
+    for (const line of lines) {
+      layout.push({ type: "text", text: line, x: width / 2, y, font, color, align: "center" });
+      y += lineHeight;
+    }
+  }
+
+  addCentered(receiptData.shopName, "700 30px Arial, sans-serif", "#171717", 38);
+  addCentered(receiptData.address, "18px Arial, sans-serif", "#626262", 25);
+  if (receiptData.shopPhone) addCentered(receiptData.shopPhone, "18px Arial, sans-serif", "#626262", 25);
+  y += 10;
+  addCentered("S A L E S   R E C E I P T", "700 18px Arial, sans-serif", "#171717", 27);
+  y += 16;
+  layout.push({ type: "rule", x1: padding, x2: width - padding, y, color: "#b9b9b9", dashed: true });
+  y += 32;
+
+  const meta = [
+    ["Bill No:", receiptData.billNumber],
+    ["Date:", receiptData.date],
+    ["Customer:", receiptData.customerName],
+    ["Phone:", receiptData.customerPhone]
+  ];
+  for (let index = 0; index < meta.length; index += 2) {
+    const rowValues = [meta[index], meta[index + 1]];
+    const rowLines = rowValues.map((entry) => wrapText(entry[0] + " " + entry[1], "16px Arial, sans-serif", contentWidth / 2 - 20));
+    for (let column = 0; column < rowValues.length; column += 1) {
+      rowLines[column].forEach((line, lineIndex) => {
+        layout.push({ type: "text", text: line, x: padding + column * (contentWidth / 2), y: y + lineIndex * 21, font: "16px Arial, sans-serif", color: "#242424", align: "left" });
+      });
+    }
+    y += Math.max(...rowLines.map((lines) => lines.length)) * 21 + 10;
+  }
+
+  const columns = { item: padding + 10, qty: padding + 390, price: padding + 530, total: width - padding - 10 };
+  layout.push({ type: "text", text: "ITEM", x: columns.item, y, font: "700 14px Arial, sans-serif", color: "#626262", align: "left" });
+  layout.push({ type: "text", text: "QTY", x: columns.qty, y, font: "700 14px Arial, sans-serif", color: "#626262", align: "left" });
+  layout.push({ type: "text", text: "PRICE", x: columns.price, y, font: "700 14px Arial, sans-serif", color: "#626262", align: "left" });
+  layout.push({ type: "text", text: "TOTAL", x: columns.total, y, font: "700 14px Arial, sans-serif", color: "#626262", align: "right" });
+  y += 14;
+  layout.push({ type: "rule", x1: padding, x2: width - padding, y, color: "#d7dce1" });
+  y += 15;
+
+  for (const item of receiptItems) {
+    const detail = [item.category, item.size, item.colour].filter(Boolean).join(" · ");
+    const nameLines = wrapText(item.name, "17px Arial, sans-serif", 350);
+    const detailLines = wrapText(detail, "14px Arial, sans-serif", 350);
+    const rowHeight = Math.max(58, nameLines.length * 22 + detailLines.length * 19 + 10);
+    nameLines.forEach((line, index) => {
+      layout.push({ type: "text", text: line, x: columns.item, y: y + 18 + index * 22, font: "17px Arial, sans-serif", color: "#242424", align: "left" });
+    });
+    detailLines.forEach((line, index) => {
+      layout.push({ type: "text", text: line, x: columns.item, y: y + 39 + nameLines.length * 4 + index * 19, font: "14px Arial, sans-serif", color: "#626262", align: "left" });
+    });
+    layout.push({ type: "text", text: String(item.quantity), x: columns.qty, y: y + 24, font: "16px Arial, sans-serif", color: "#242424", align: "left" });
+    layout.push({ type: "text", text: "₹" + Number(item.price).toFixed(2), x: columns.price, y: y + 24, font: "16px Arial, sans-serif", color: "#242424", align: "left" });
+    layout.push({ type: "text", text: "₹" + Number(item.total).toFixed(2), x: columns.total, y: y + 24, font: "16px Arial, sans-serif", color: "#242424", align: "right" });
+    y += rowHeight;
+    layout.push({ type: "rule", x1: padding, x2: width - padding, y, color: "#d7dce1" });
+    y += 12;
+  }
+
+  y += 12;
+  const totals = [
+    ["Subtotal", "₹" + Number(receiptData.subtotal).toFixed(2), false],
+    ["Discount", "− ₹" + Number(receiptData.discount).toFixed(2), false],
+    ["Total", "₹" + Number(receiptData.total).toFixed(2), true],
+    ["Received", "₹" + Number(receiptData.received).toFixed(2), false],
+    ["Balance Due", "₹" + Number(receiptData.balance).toFixed(2), false],
+    ["Payment", receiptData.paymentMethod + " · " + receiptData.paymentStatus, false]
+  ];
+  for (const [label, value, isGrand] of totals) {
+    if (isGrand) {
+      layout.push({ type: "rule", x1: width - padding - 340, x2: width - padding, y: y - 8, color: "#d7dce1" });
+      y += 8;
+    }
+    const font = isGrand ? "700 22px Arial, sans-serif" : "16px Arial, sans-serif";
+    layout.push({ type: "text", text: label, x: width - padding - 340, y, font, color: "#242424", align: "left" });
+    layout.push({ type: "text", text: value, x: width - padding, y, font: isGrand ? "700 23px Arial, sans-serif" : "700 16px Arial, sans-serif", color: "#171717", align: "right" });
+    y += isGrand ? 42 : 31;
+  }
+
+  y += 8;
+  layout.push({ type: "rule", x1: padding, x2: width - padding, y, color: "#b9b9b9", dashed: true });
+  y += 36;
+  addCentered("Thank you for shopping with us!", "700 18px Arial, sans-serif", "#171717", 26);
+  addCentered("We look forward to seeing you again.", "700 18px Arial, sans-serif", "#171717", 26);
+
+  canvas.height = y + 44;
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, width, canvas.height);
+  context.textBaseline = "alphabetic";
+  for (const element of layout) {
+    if (element.type === "logo") {
+      context.drawImage(element.image, element.x, element.y, element.width, element.height);
+    } else if (element.type === "fallback-logo") {
+      context.fillStyle = "#b5122b";
+      context.fillRect(element.x - 42, element.y - 30, 84, 60);
+      context.font = "700 27px Arial, sans-serif";
+      context.fillStyle = "#ffffff";
+      context.textAlign = "center";
+      context.fillText("HI-5", element.x, element.y + 9);
+    } else if (element.type === "rule") {
+      context.beginPath();
+      context.strokeStyle = element.color;
+      context.lineWidth = 1;
+      context.setLineDash(element.dashed ? [5, 5] : []);
+      context.moveTo(element.x1, element.y);
+      context.lineTo(element.x2, element.y);
+      context.stroke();
+      context.setLineDash([]);
+    } else {
+      context.font = element.font;
+      context.fillStyle = element.color;
+      context.textAlign = element.align;
+      context.fillText(element.text, element.x, element.y);
+    }
+  }
+
+  const imageData = canvas.toDataURL("image/png");
+  const bytes = Uint8Array.from(atob(imageData.split(",")[1]), (character) => character.charCodeAt(0));
+  return new File([bytes], receiptData.billNumber + ".png", { type: "image/png" });
+}
+
+function downloadFile(file) {
+  const link = document.createElement("a");
+  const url = URL.createObjectURL(file);
+  link.href = url;
+  link.download = file.name;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function whatsappUrl(message) {
+  return whatsappReceiptUrl(message);
+}
+
+function downloadReceiptImage() {
+  try {
+    downloadFile(receiptImageFile());
+    setShareStatus("Bill image downloaded. Attach it in the +91 8667579407 WhatsApp conversation.", false);
+  } catch (error) {
+    setShareStatus(error.message || "Could not create the bill image. Please try Print Receipt instead.", true);
+  }
+}
+
+async function shareWhatsApp() {
+  const button = document.getElementById("share-receipt");
+  button.disabled = true;
+  setShareStatus("Preparing your bill image…", false);
+  try {
+    const file = receiptImageFile();
+    const message = "HI-5 receipt " + receiptData.billNumber + " · Grand total: ₹" + Number(receiptData.total).toFixed(2) + " · Intended recipient: +91 8667579407.";
+    if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], title: receiptData.billNumber, text: message });
+        setShareStatus("Choose WhatsApp and the +91 8667579407 conversation in your device's share options.", false);
+      } catch (error) {
+        if (error.name === "AbortError") {
+          setShareStatus("Sharing cancelled. Your receipt is unchanged.", false);
+          return;
+        } else {
+          downloadFile(file);
+          window.open(whatsappUrl(message + " The bill image was downloaded; attach it to send the full receipt."), "_blank", "noopener");
+          setShareStatus("Direct image sharing is unavailable. Attach the downloaded image in the +91 8667579407 WhatsApp conversation.", false);
+        }
+      }
+      return;
+    }
+    downloadFile(file);
+    window.open(whatsappUrl(message + " The bill image was downloaded; attach it to send the full receipt."), "_blank", "noopener");
+    setShareStatus("Bill image downloaded. Attach it in the +91 8667579407 WhatsApp conversation.", false);
+  } catch (error) {
+    setShareStatus(error.message || "Could not share the bill. Download the receipt image and attach it in WhatsApp.", true);
+  } finally {
+    button.disabled = false;
+  }
+}
+</script>
+{% endblock %}
