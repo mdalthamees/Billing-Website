@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+.flaskenv
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+.migration-backups/
+instance/*.db
+static/uploads/*
+!static/uploads/.gitkeep
+node_modules/

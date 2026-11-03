@@ -1,19 +1,21 @@
 # HI-5 FOOTWEAR & BOUTIQUES – POS
 
-A local Flask + SQLite retail POS starter application for footwear and clothing.
-No paid APIs, API keys, GST or cloud service required.
+A Flask + MySQL retail POS application for footwear and clothing.
 
-## Run in VS Code (Windows PowerShell)
+## SQLite-to-MySQL migration and local run (Windows PowerShell)
 
 ```powershell
-cd hi5_pos
-py -3.10 -m venv .venv
+cd C:\path\to\Billing-Website
+py -3.12 -m venv .venv
 .\\.venv\\Scripts\\Activate.ps1
 pip install -r requirements.txt
+if (!(Test-Path .env)) { Copy-Item .env.example .env }
+# Keep existing .env values; configure the MySQL connection and admin hash there.
+python migrate_sqlite_to_mysql.py
 python app.py
 ```
 
-Open http://127.0.0.1:5000
+Open http://127.0.0.1:5001
 
 If PowerShell blocks activation, run:
 ```powershell
@@ -21,9 +23,25 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\\.venv\\Scripts\\Activate.ps1
 ```
 
-The SQLite database is created automatically at `instance/hi5_pos.db`.
-Uploaded product images and the optional shop logo are stored under `static/uploads/`.
-Back up the `instance` and `static/uploads` folders regularly.
+The importer makes a verified SQLite backup under `.migration-backups\` before
+creating MySQL tables or importing records. It preserves SQLite IDs and
+relationships, verifies table row counts and record values, and records a
+fingerprint so rerunning it against the same snapshot does not duplicate rows.
+It refuses to import into populated target tables or overwrite a previous
+import. The original `instance\hi5_pos.db` is retained. Back up the MySQL
+database and `static\uploads\` regularly.
+
+Generate a local secret in PowerShell with:
+
+```powershell
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+python -c "from getpass import getpass; from werkzeug.security import generate_password_hash; print(generate_password_hash(getpass()))"
+```
+
+Paste the first result into `.env` as `SECRET_KEY=...` and the second as
+`ADMIN_PASSWORD_HASH=...`. The app requires administrator sign-in. Do not
+commit `.env`. Tests use the marked `hi5_billing_test_adfe86e7` MySQL database,
+never the business database.
 
 Open **History & Excel** from the sidebar to review recent activity or download the complete workbook. Individual deletions and the clear-all operation archive record snapshots before removing current records. Records deleted before the archive feature was added cannot be reconstructed; records still present are included in the live-data sheets.
 
@@ -44,10 +62,18 @@ Open **History & Excel** from the sidebar to review recent activity or download 
 - Responsive mobile navigation, card-based mobile tables, and reduced-motion-aware interface animations.
 
 ## Important
-This is a locally hosted single-shop application. Before using it as the only record system,
-test with sample transactions and keep regular database backups. For multiple simultaneous
-cashiers across different devices, deploy with a production WSGI server and shared database.
+This is a locally hosted single-shop application. Keep regular MySQL backups.
+For multiple simultaneous cashiers across different devices, deploy with a
+production WSGI server and shared database.
 
 Browsers do not let websites choose a WhatsApp contact or attach a local image through a
 WhatsApp share link. When native image sharing is unavailable, the POS downloads the PNG
 and opens a pre-addressed WhatsApp message; the image must then be attached manually.
+
+## Database and deployment status
+
+The application now uses pooled `mysql-connector-python` connections with
+parameterized queries and UTF-8 (`utf8mb4`). The SQLite file is retained as a
+backup/source for the idempotent migration command. Vercel deployment and
+durable cloud storage for uploaded images are separate tasks; do not use
+serverless local files as permanent storage.

@@ -1,122 +1,152 @@
-import os, sqlite3, csv, io
+import os, csv, io, logging, secrets, hmac
 import json
 from datetime import datetime, date
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_file, abort
+from decimal import Decimal, InvalidOperation
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_file, abort, session
 from werkzeug.utils import secure_filename
+from werkzeug.security import check_password_hash
+from dotenv import load_dotenv
+import mysql.connector
+from mysql.connector import IntegrityError
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
+from database import close_request_connection, configure_mysql, mysql_cursor, mysql_pool, initialize_mysql_schema
 
 BASE = os.path.abspath(os.path.dirname(__file__))
-INSTANCE = os.path.join(BASE, "instance")
+load_dotenv(os.path.join(BASE, ".env"))
 UPLOADS = os.path.join(BASE, "static", "uploads")
-os.makedirs(INSTANCE, exist_ok=True)
 os.makedirs(UPLOADS, exist_ok=True)
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("HI5_SECRET_KEY", "change-this-local-secret")
-DB = os.path.join(INSTANCE, "hi5_pos.db")
+APP_ENV = os.environ.get("APP_ENV", os.environ.get("FLASK_ENV", "development")).lower()
+app.secret_key = os.environ.get("SECRET_KEY") or os.environ.get("HI5_SECRET_KEY")
+if not app.secret_key:
+    if APP_ENV == "production":
+        raise RuntimeError("SECRET_KEY must be configured in production.")
+    app.secret_key = secrets.token_urlsafe(32)
+    logging.warning("No SECRET_KEY configured; using a temporary local development key.")
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=APP_ENV == "production",
+    DB_HOST=os.environ.get("DB_HOST", "localhost"),
+    DB_PORT=int(os.environ.get("DB_PORT", "3306")),
+    DB_NAME=os.environ.get("DB_NAME", "hi5_billing"),
+    DB_USER=os.environ.get("DB_USER", "root"),
+    DB_PASSWORD=os.environ.get("DB_PASSWORD", ""),
+    MYSQL_POOL_SIZE=int(os.environ.get("MYSQL_POOL_SIZE", "5")),
+    DB_CONNECT_TIMEOUT=int(os.environ.get("DB_CONNECT_TIMEOUT", "5")),
+)
+configure_mysql(app.config)
+app.teardown_appcontext(close_request_connection)
+ADMIN_PASSWORD_HASH = os.environ.get("ADMIN_PASSWORD_HASH", "")
+if APP_ENV == "production" and not ADMIN_PASSWORD_HASH:
+    raise RuntimeError("ADMIN_PASSWORD_HASH must be configured in production.")
+if ADMIN_PASSWORD_HASH:
+    try:
+        check_password_hash(ADMIN_PASSWORD_HASH,"")
+    except ValueError as error:
+        raise RuntimeError("ADMIN_PASSWORD_HASH is not a valid Werkzeug password hash.") from error
 ALLOWED = {"png", "jpg", "jpeg", "webp"}
 
 def db():
-    con = sqlite3.connect(DB)
-    con.row_factory = sqlite3.Row
-    con.execute("PRAGMA foreign_keys=ON")
-    return con
+    return mysql_cursor()
+
+def csrf_token():
+    token = session.get("_csrf_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["_csrf_token"] = token
+    return token
+
+@app.before_request
+def protect_state_changes():
+    if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
+        return
+    expected = session.get("_csrf_token", "")
+    supplied = request.form.get("csrf_token", "") or request.headers.get("X-CSRF-Token", "")
+    if not expected or not supplied or not hmac.compare_digest(expected, supplied):
+        abort(400, description="The request could not be verified. Reload the page and try again.")
+
+@app.before_request
+def require_admin():
+    if request.endpoint in {"login", "static"}:
+        return
+    if not session.get("admin_authenticated"):
+        if request.path.startswith("/api/"):
+            return jsonify(error="Administrator login is required."),401
+        return redirect(url_for("login"))
+
+@app.context_processor
+def inject_csrf_token():
+    return {"csrf_token": csrf_token}
+
+@app.errorhandler(400)
+def handle_bad_request(error):
+    if request.path.startswith("/api/"):
+        return jsonify(error=error.description),400
+    return error
+
+@app.errorhandler(500)
+def handle_internal_error(error):
+    original=getattr(error,"original_exception",None)
+    if original:
+        app.logger.error("Unhandled request error.",
+            exc_info=(type(original),original,original.__traceback__))
+    else:
+        app.logger.error("Unhandled request error: %s",error)
+    if request.path.startswith("/api/"):
+        return jsonify(error="An internal server error occurred."),500
+    return "An internal server error occurred.",500
+
+def parse_amount(value, field_name, default="0"):
+    try:
+        amount = Decimal(str(value if value not in (None, "") else default))
+    except (InvalidOperation, ValueError, TypeError):
+        raise ValueError(f"{field_name} must be a valid amount.")
+    if not amount.is_finite() or amount < 0 or amount > Decimal("999999999.99"):
+        raise ValueError(f"{field_name} must be a non-negative finite amount.")
+    try:
+        return amount.quantize(Decimal("0.01"))
+    except InvalidOperation as error:
+        raise ValueError(f"{field_name} is outside the supported range.") from error
+
+@app.route("/login", methods=["GET","POST"])
+def login():
+    if session.get("admin_authenticated"):
+        return redirect(url_for("dashboard"))
+    if request.method == "POST":
+        password=request.form.get("password","")
+        if not ADMIN_PASSWORD_HASH:
+            app.logger.error("Admin login is unavailable because ADMIN_PASSWORD_HASH is not configured.")
+            flash("Admin login is not configured. Set ADMIN_PASSWORD_HASH in .env and restart the app.","danger")
+        elif check_password_hash(ADMIN_PASSWORD_HASH,password):
+            session.clear()
+            session["admin_authenticated"]=True
+            return redirect(url_for("dashboard"))
+        else:
+            flash("Invalid administrator password.","danger")
+    return render_template("login.html")
+
+@app.route("/logout", methods=["POST"])
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
 
 def init_db():
+    connection = mysql_pool().get_connection()
+    try:
+        initialize_mysql_schema(connection)
+    except mysql.connector.Error:
+        logging.exception("Could not initialize the MySQL schema.")
+        raise
+    finally:
+        connection.close()
+
     with db() as c:
-        c.executescript("""
-        CREATE TABLE IF NOT EXISTS settings (
-            id INTEGER PRIMARY KEY CHECK(id=1), shop_name TEXT NOT NULL,
-            address TEXT NOT NULL, phone TEXT DEFAULT '', logo TEXT DEFAULT ''
-        );
-        INSERT OR IGNORE INTO settings(id,shop_name,address,phone,logo)
-        VALUES(1,'HI-5 FOOTWEAR & BOUTIQUES','Gandhi Street, R.S. Mangalam, Ramanathapuram, Tamil Nadu','','');
-        CREATE TABLE IF NOT EXISTS customers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
-            phone TEXT UNIQUE, created_at TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS products (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
-            code TEXT NOT NULL UNIQUE, department TEXT NOT NULL,
-            category TEXT NOT NULL, subcategory TEXT DEFAULT '',
-            gender TEXT DEFAULT '', age_group TEXT DEFAULT '',
-            size TEXT DEFAULT '', colour TEXT DEFAULT '', brand TEXT DEFAULT '',
-            purchase_price REAL NOT NULL DEFAULT 0, selling_price REAL NOT NULL DEFAULT 0,
-            stock INTEGER NOT NULL DEFAULT 0, image TEXT DEFAULT '',
-            created_at TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS bills (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, bill_no TEXT UNIQUE NOT NULL,
-            customer_id INTEGER, customer_name TEXT DEFAULT '', customer_phone TEXT DEFAULT '',
-            subtotal REAL NOT NULL, discount REAL NOT NULL DEFAULT 0,
-            total REAL NOT NULL, received REAL NOT NULL DEFAULT 0,
-            balance REAL NOT NULL DEFAULT 0, payment_method TEXT NOT NULL,
-            payment_status TEXT NOT NULL, created_at TEXT NOT NULL,
-            FOREIGN KEY(customer_id) REFERENCES customers(id)
-        );
-        CREATE TABLE IF NOT EXISTS bill_items (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, bill_id INTEGER NOT NULL,
-            product_id INTEGER, product_name TEXT NOT NULL, code TEXT DEFAULT '',
-            department TEXT DEFAULT '', category TEXT DEFAULT '', size TEXT DEFAULT '',
-            colour TEXT DEFAULT '', quantity INTEGER NOT NULL, price REAL NOT NULL,
-            line_total REAL NOT NULL,
-            FOREIGN KEY(bill_id) REFERENCES bills(id) ON DELETE CASCADE,
-            FOREIGN KEY(product_id) REFERENCES products(id)
-        );
-        CREATE TABLE IF NOT EXISTS payments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, bill_id INTEGER NOT NULL,
-            amount REAL NOT NULL, method TEXT NOT NULL, created_at TEXT NOT NULL,
-            FOREIGN KEY(bill_id) REFERENCES bills(id) ON DELETE CASCADE
-        );
-        CREATE TABLE IF NOT EXISTS stock_preferences (
-            id INTEGER PRIMARY KEY CHECK(id=1),
-            minimum_stock INTEGER NOT NULL DEFAULT 5
-        );
-        INSERT OR IGNORE INTO stock_preferences(id,minimum_stock) VALUES(1,5);
-        CREATE TABLE IF NOT EXISTS stock_movements (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            product_id INTEGER,
-            product_name TEXT NOT NULL,
-            product_code TEXT NOT NULL DEFAULT '',
-            movement_type TEXT NOT NULL,
-            quantity INTEGER NOT NULL CHECK(quantity>0),
-            note TEXT NOT NULL DEFAULT '',
-            bill_id INTEGER,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY(product_id) REFERENCES products(id) ON DELETE SET NULL,
-            FOREIGN KEY(bill_id) REFERENCES bills(id) ON DELETE SET NULL
-        );
-        CREATE TABLE IF NOT EXISTS inventory_migrations (
-            migration_key TEXT PRIMARY KEY,
-            completed_at TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS audit_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at TEXT NOT NULL,
-            action TEXT NOT NULL,
-            entity_type TEXT NOT NULL,
-            entity_id TEXT DEFAULT '',
-            reference TEXT DEFAULT '',
-            details_json TEXT NOT NULL
-        );
-        """)
-        count = c.execute("SELECT COUNT(*) FROM products").fetchone()[0]
-        cleared_all = c.execute("""SELECT 1 FROM inventory_migrations
-            WHERE migration_key='clear-all-completed'""").fetchone()
-        if count == 0 and not cleared_all:
-            samples = [
-              ("Men Running Shoes","FW-MSH-01","Footwear","Men's Shoes","","Men","","9","Black","HI5",850,1299,12),
-              ("Ladies Sandal","FW-WS-01","Footwear","Women's Sandals","","Women","","6","Tan","HI5",350,599,18),
-              ("Kids School Shoes","FW-KS-01","Footwear","School Shoes","","Unisex","5–8","2","Black","HI5",420,699,10),
-              ("Cotton Kurti","DR-KU-01","Dress","Ladies Collection","Kurtis","Women","12+","M","Maroon","",400,799,15),
-              ("Printed Top","DR-TP-01","Dress","Ladies Collection","Tops","Women","12+","L","Blue","",250,499,20),
-              ("Girls Frock","DR-GF-01","Dress","Girls Kids Collection","Girls Frocks","Girls","3–5","4Y","Pink","",300,649,8),
-              ("Boys T-Shirt","DR-BT-01","Dress","Boys Kids Collection","Boys T-Shirts","Boys","5–8","6Y","Green","",180,399,14),
-              ("Kids Combo Set","DR-KC-01","Dress","Kids Collection","Kids Sets","Unisex","1–3","2Y","Yellow","",350,699,9)
-            ]
-            c.executemany("""INSERT INTO products(name,code,department,category,subcategory,gender,age_group,size,colour,brand,purchase_price,selling_price,stock,created_at)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", [x+(datetime.now().isoformat(timespec="seconds"),) for x in samples])
+        c.execute("""INSERT OR IGNORE INTO settings(id,shop_name,address,phone,logo)
+        VALUES(1,'HI-5 FOOTWEAR & BOUTIQUES','Gandhi Street, R.S. Mangalam, Ramanathapuram, Tamil Nadu','','')""")
+        c.execute("INSERT OR IGNORE INTO stock_preferences(id,minimum_stock) VALUES(1,5)")
         imported = c.execute(
             "SELECT 1 FROM inventory_migrations WHERE migration_key='opening-stock-v1'"
         ).fetchone()
@@ -265,11 +295,17 @@ def stock_movement():
     movement_type = request.form.get("movement_type","")
     note = request.form.get("note","").strip()
     try:
+        if not product_id.isdecimal():
+            raise ValueError("Select a valid product.")
         quantity = int(request.form.get("quantity","0"))
-        if quantity < 1:
+        if quantity < 1 or quantity>2147483647:
             raise ValueError("Quantity must be a positive whole number.")
         if movement_type not in {"stock_in","stock_out"}:
             raise ValueError("Choose Stock In or Stock Out.")
+        if not note:
+            raise ValueError("Enter a reason for this stock movement.")
+        if len(note)>160:
+            raise ValueError("The stock movement reason must be 160 characters or fewer.")
         with db() as c:
             product = c.execute("SELECT * FROM products WHERE id=?",(product_id,)).fetchone()
             if not product:
@@ -285,12 +321,13 @@ def stock_movement():
                 (product_id,product_name,product_code,movement_type,quantity,note,created_at)
                 VALUES(?,?,?,?,?,?,?)""",(product["id"],product["name"],product["code"],
                 movement_type,quantity,note,datetime.now().isoformat(timespec="seconds")))
+            movement_id = c.execute("SELECT LAST_INSERT_ID()").fetchone()[0]
             movement = c.execute("SELECT * FROM stock_movements WHERE id=?",
-                (c.execute("SELECT last_insert_rowid()").fetchone()[0],)).fetchone()
+                (movement_id,)).fetchone()
             audit(c,"added","stock movement",movement["id"],product["code"],
                 {"movement":dict(movement),"product":dict(product)})
         flash("Stock movement recorded.","success")
-    except (ValueError, sqlite3.Error) as e:
+    except (ValueError, mysql.connector.Error) as e:
         flash("Could not record stock movement: "+str(e),"danger")
     return redirect(url_for("stock_maintenance"))
 
@@ -298,15 +335,15 @@ def stock_movement():
 def stock_settings():
     try:
         minimum_stock = int(request.form.get("minimum_stock",""))
-        if minimum_stock < 0:
-            raise ValueError("Minimum stock cannot be negative.")
+        if minimum_stock < 0 or minimum_stock>2147483647:
+            raise ValueError("Minimum stock must be between 0 and 2,147,483,647.")
         with db() as c:
             previous = c.execute("SELECT minimum_stock FROM stock_preferences WHERE id=1").fetchone()[0]
             c.execute("UPDATE stock_preferences SET minimum_stock=? WHERE id=1",(minimum_stock,))
             audit(c,"updated","stock alert setting",1,"minimum stock",
                 {"before":{"minimum_stock":previous},"after":{"minimum_stock":minimum_stock}})
         flash("Minimum stock alert updated.","success")
-    except (ValueError, sqlite3.Error) as e:
+    except (ValueError, mysql.connector.Error) as e:
         flash("Could not update minimum stock alert: "+str(e),"danger")
     return redirect(url_for("stock_maintenance"))
 
@@ -325,16 +362,38 @@ def products():
 def product_save():
     f=request.form
     try:
+        name=f.get("name","").strip()
+        code=f.get("code","").strip()
+        department=f.get("department","").strip()
+        category=f.get("category","").strip()
+        if not name:
+            raise ValueError("Product name is required.")
+        if not code:
+            raise ValueError("Product code is required.")
+        if department not in {"Footwear","Dress"}:
+            raise ValueError("Choose a valid department.")
+        if not category:
+            raise ValueError("Product category is required.")
+        stock_text=f.get("stock","0").strip()
+        if not stock_text.isdecimal():
+            raise ValueError("Stock quantity must be a non-negative whole number.")
+        stock=int(stock_text)
+        if stock>2147483647:
+            raise ValueError("Stock quantity is outside the supported range.")
+        purchase_price=parse_amount(f.get("purchase_price"),"Purchase price")
+        selling_price=parse_amount(f.get("selling_price"),"Selling price")
+        if selling_price <= 0:
+            raise ValueError("Selling price must be greater than zero.")
         image_name=upload_image(request.files.get("image"),"product")
         with db() as c:
-            pid=f.get("id")
-            stock=int(f.get("stock") or 0)
-            if stock < 0:
-                raise ValueError("Stock quantity cannot be negative.")
-            vals=(f["name"].strip(),f["code"].strip(),f["department"],f["category"],f.get("subcategory",""),
-              f.get("gender",""),f.get("age_group",""),f.get("size",""),f.get("colour",""),f.get("brand",""),
-              float(f.get("purchase_price") or 0),float(f.get("selling_price") or 0),stock)
+            pid=f.get("id","").strip()
+            vals=(name,code,department,category,f.get("subcategory","").strip(),
+              f.get("gender","").strip(),f.get("age_group","").strip(),f.get("size","").strip(),
+              f.get("colour","").strip(),f.get("brand","").strip(),
+              float(purchase_price),float(selling_price),stock)
             if pid:
+                if not pid.isdecimal():
+                    raise ValueError("Invalid product identifier.")
                 current = c.execute("SELECT * FROM products WHERE id=?",(pid,)).fetchone()
                 if not current:
                     raise ValueError("Product not found.")
@@ -352,8 +411,9 @@ def product_save():
                         VALUES(?,?,?,?,?,?,?)""",(pid,f["name"].strip(),f["code"].strip(),
                         movement_type,abs(difference),"Stock corrected while editing product",
                         datetime.now().isoformat(timespec="seconds")))
+                    movement_id = c.execute("SELECT LAST_INSERT_ID()").fetchone()[0]
                     movement = c.execute("SELECT * FROM stock_movements WHERE id=?",
-                        (c.execute("SELECT last_insert_rowid()").fetchone()[0],)).fetchone()
+                        (movement_id,)).fetchone()
                     audit(c,"added","stock movement",movement["id"],f["code"].strip(),
                         {"movement":dict(movement)})
                 updated = c.execute("SELECT * FROM products WHERE id=?",(pid,)).fetchone()
@@ -362,22 +422,29 @@ def product_save():
             else:
                 c.execute("""INSERT INTO products(name,code,department,category,subcategory,gender,age_group,size,colour,brand,purchase_price,selling_price,stock,image,created_at)
                     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", vals+(image_name,datetime.now().isoformat(timespec="seconds")))
-                pid = c.execute("SELECT last_insert_rowid()").fetchone()[0]
+                pid = c.execute("SELECT LAST_INSERT_ID()").fetchone()[0]
                 if stock:
                     c.execute("""INSERT INTO stock_movements
                         (product_id,product_name,product_code,movement_type,quantity,note,created_at)
-                        VALUES(?,?,?,'opening',?,?,?)""",(pid,f["name"].strip(),f["code"].strip(),
+                        VALUES(?,?,?,'opening',?,?,?)""",(pid,name,code,
                         stock,"Opening stock entered during product setup",
                         datetime.now().isoformat(timespec="seconds")))
+                    movement_id = c.execute("SELECT LAST_INSERT_ID()").fetchone()[0]
                     movement = c.execute("SELECT * FROM stock_movements WHERE id=?",
-                        (c.execute("SELECT last_insert_rowid()").fetchone()[0],)).fetchone()
+                        (movement_id,)).fetchone()
                     audit(c,"added","stock movement",movement["id"],f["code"].strip(),
                         {"movement":dict(movement)})
                 created = c.execute("SELECT * FROM products WHERE id=?",(pid,)).fetchone()
                 audit(c,"created","product",pid,created["code"],dict(created))
         flash("Product saved successfully.","success")
-    except (ValueError, sqlite3.IntegrityError) as e:
+    except ValueError as e:
         flash("Could not save product: "+str(e),"danger")
+    except IntegrityError as e:
+        logging.info("Product save rejected by a database constraint: %s",e)
+        flash("Could not save product: that product code is already in use.","danger")
+    except mysql.connector.Error:
+        logging.exception("Database error while saving a product.")
+        flash("Could not save product because of a database error. No changes were saved.","danger")
     return redirect(url_for("products"))
 
 @app.route("/products/delete/<int:pid>", methods=["POST"])
@@ -396,7 +463,7 @@ def product_delete(pid):
             c.execute("DELETE FROM stock_movements WHERE product_id=?",(pid,))
             c.execute("DELETE FROM products WHERE id=?",(pid,))
         flash("Product deleted. Existing bills keep their saved product details.","success")
-    except sqlite3.Error as e:
+    except mysql.connector.Error as e:
         flash("Could not delete product: "+str(e),"danger")
     return redirect(url_for("products"))
 
@@ -437,7 +504,7 @@ def bill_delete(bid):
             c.execute("DELETE FROM stock_movements WHERE bill_id=?",(bid,))
             c.execute("DELETE FROM bills WHERE id=?",(bid,))
         flash("Bill deleted and sold quantities returned to stock.","success")
-    except sqlite3.Error as e:
+    except mysql.connector.Error as e:
         flash("Could not delete bill: "+str(e),"danger")
     return redirect(url_for("sales"))
 
@@ -467,7 +534,7 @@ def payment_delete(payment_id):
                 (json.dumps({"payment":dict(payment_record),"bill_before":dict(bill_before),
                              "bill_after":dict(bill_after)},ensure_ascii=False),audit_id))
         flash("Payment deleted and bill balance recalculated.","success")
-    except sqlite3.Error as e:
+    except mysql.connector.Error as e:
         flash("Could not delete payment: "+str(e),"danger")
     return redirect(url_for("receipt",bid=bill_id))
 
@@ -497,7 +564,7 @@ def stock_movement_delete(movement_id):
                 c.execute("UPDATE products SET stock=stock+? WHERE id=?",(stock_change,product_id))
             c.execute("DELETE FROM stock_movements WHERE id=?",(movement_id,))
         flash("Stock movement deleted and inventory adjusted.","success")
-    except (ValueError, sqlite3.Error) as e:
+    except (ValueError, mysql.connector.Error) as e:
         flash("Could not delete stock movement: "+str(e),"danger")
     return redirect(url_for("stock_maintenance"))
 
@@ -518,34 +585,69 @@ def billing():
 
 @app.route("/api/bills", methods=["POST"])
 def create_bill():
-    data=request.get_json(force=True)
-    items=data.get("items",[])
-    if not items: return jsonify(error="Cart is empty."),400
     try:
-        discount=max(0,float(data.get("discount",0)))
-        received=max(0,float(data.get("received",0)))
+        data=request.get_json(silent=True)
+        if not isinstance(data,dict):
+            raise ValueError("A valid JSON request is required.")
+        items=data.get("items")
+        if not isinstance(items,list) or not items or len(items)>200:
+            raise ValueError("Add between 1 and 200 bill items.")
+        idempotency_key=data.get("idempotency_key","")
+        if not isinstance(idempotency_key,str) or len(idempotency_key)!=32:
+            raise ValueError("The bill request key is invalid. Reload the page and try again.")
+        try:
+            bytes.fromhex(idempotency_key)
+        except ValueError:
+            raise ValueError("The bill request key is invalid. Reload the page and try again.")
+        discount=parse_amount(data.get("discount"),"Discount")
+        received=parse_amount(data.get("received"),"Amount received")
         method=data.get("payment_method","Cash")
+        if method not in {"Cash","UPI","Card"}:
+            raise ValueError("Choose Cash, UPI or Card as the payment method.")
+        cname=data.get("customer_name") or ""
+        phone=data.get("customer_phone") or ""
+        if not isinstance(cname,str) or not isinstance(phone,str):
+            raise ValueError("Customer name and phone must be text.")
+        cname=cname.strip()
+        phone=phone.strip()
+        if len(cname)>120 or len(phone)>32:
+            raise ValueError("Customer name or phone is too long.")
         with db() as c:
             c.execute("BEGIN IMMEDIATE")
-            subtotal=0; checked=[]
+            previous=c.execute(
+                "SELECT response_json FROM bill_requests WHERE idempotency_key=?",
+                (idempotency_key,)).fetchone()
+            if previous:
+                return jsonify(json.loads(previous["response_json"]))
+            subtotal=Decimal("0.00")
+            checked=[]
             requested_quantities={}
             for item in items:
-                p=c.execute("SELECT * FROM products WHERE id=?",(int(item["id"]),)).fetchone()
-                qty=int(item["quantity"])
-                if not p or qty<1: raise ValueError("Invalid product or quantity.")
+                if not isinstance(item,dict):
+                    raise ValueError("Each bill item must be a product and quantity.")
+                product_id=item.get("id")
+                qty=item.get("quantity")
+                if isinstance(product_id,bool) or not isinstance(product_id,int) or product_id<1:
+                    raise ValueError("Invalid product.")
+                if isinstance(qty,bool) or not isinstance(qty,int) or qty<1:
+                    raise ValueError("Product quantities must be positive whole numbers.")
+                if qty>2147483647:
+                    raise ValueError("Product quantity is outside the supported range.")
+                p=c.execute("SELECT * FROM products WHERE id=?",(product_id,)).fetchone()
+                if not p:
+                    raise ValueError("Invalid product.")
                 requested_quantities[p["id"]]=requested_quantities.get(p["id"],0)+qty
                 if p["stock"]<requested_quantities[p["id"]]: raise ValueError(f"Insufficient stock for {p['name']} ({p['size']} / {p['colour']}). Available: {p['stock']}")
-                price=float(item.get("price",p["selling_price"]))
-                if price<0: raise ValueError("Price cannot be negative.")
+                price=Decimal(str(p["selling_price"])).quantize(Decimal("0.01"))
                 subtotal += price*qty
                 checked.append((p,qty,price))
             if discount>subtotal: raise ValueError("Discount cannot exceed subtotal.")
-            total=round(subtotal-discount,2)
-            if received>total: received=total
-            balance=round(total-received,2)
+            subtotal=subtotal.quantize(Decimal("0.01"))
+            total=(subtotal-discount).quantize(Decimal("0.01"))
+            if received>total:
+                raise ValueError("Amount received cannot exceed the bill total.")
+            balance=(total-received).quantize(Decimal("0.01"))
             status="Paid" if balance==0 else ("Partially Paid" if received>0 else "Pending")
-            cname=(data.get("customer_name") or "").strip()
-            phone=(data.get("customer_phone") or "").strip()
             cid=None
             if phone:
                 old=c.execute("SELECT * FROM customers WHERE phone=?",(phone,)).fetchone()
@@ -561,14 +663,14 @@ def create_bill():
                     cid=cur.lastrowid
                     added = c.execute("SELECT * FROM customers WHERE id=?",(cid,)).fetchone()
                     audit(c,"created","customer",cid,phone,dict(added))
-            bill_no="HI5-"+datetime.now().strftime("%y%m%d-%H%M%S")
+            bill_no="HI5-"+datetime.now().strftime("%y%m%d-%H%M%S")+"-"+secrets.token_hex(3).upper()
             bill_created_at=datetime.now().isoformat(timespec="seconds")
             cur=c.execute("""INSERT INTO bills(bill_no,customer_id,customer_name,customer_phone,subtotal,discount,total,received,balance,payment_method,payment_status,created_at)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",(bill_no,cid,cname,phone,subtotal,discount,total,received,balance,method,status,bill_created_at))
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",(bill_no,cid,cname,phone,float(subtotal),float(discount),float(total),float(received),float(balance),method,status,bill_created_at))
             bid=cur.lastrowid
             for p,qty,price in checked:
                 c.execute("""INSERT INTO bill_items(bill_id,product_id,product_name,code,department,category,size,colour,quantity,price,line_total)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?)""",(bid,p["id"],p["name"],p["code"],p["department"],p["subcategory"] or p["category"],p["size"],p["colour"],qty,price,price*qty))
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?)""",(bid,p["id"],p["name"],p["code"],p["department"],p["subcategory"] or p["category"],p["size"],p["colour"],qty,float(price),float(price*qty)))
                 updated=c.execute("UPDATE products SET stock=stock-? WHERE id=? AND stock>=?",
                     (qty,p["id"],qty))
                 if updated.rowcount != 1:
@@ -578,7 +680,7 @@ def create_bill():
                     VALUES(?,?,?,'sale',?,?,?,?)""",(p["id"],p["name"],p["code"],qty,
                     f"Sale {bill_no}",bid,datetime.now().isoformat(timespec="seconds")))
             if received>0:
-                c.execute("INSERT INTO payments(bill_id,amount,method,created_at) VALUES(?,?,?,?)",(bid,received,method,datetime.now().isoformat(timespec="seconds")))
+                c.execute("INSERT INTO payments(bill_id,amount,method,created_at) VALUES(?,?,?,?)",(bid,float(received),method,datetime.now().isoformat(timespec="seconds")))
             bill_record=c.execute("SELECT * FROM bills WHERE id=?",(bid,)).fetchone()
             bill_items=c.execute("SELECT * FROM bill_items WHERE bill_id=?",(bid,)).fetchall()
             bill_payments=c.execute("SELECT * FROM payments WHERE bill_id=?",(bid,)).fetchall()
@@ -587,22 +689,32 @@ def create_bill():
                 {"bill":dict(bill_record),"items":[dict(row) for row in bill_items],
                  "payments":[dict(row) for row in bill_payments],
                  "stock_movements":[dict(row) for row in bill_movements]})
-        shop = settings()
-        return jsonify(ok=True,bill_id=bid,bill_no=bill_no,receipt={
-            "shopName":shop["shop_name"],"address":shop["address"],"shopPhone":shop["phone"],
-            "logoUrl":url_for("static",filename="uploads/"+shop["logo"]) if shop["logo"] else "",
-            "billNumber":bill_no,"date":bill_created_at,
-            "customerName":cname or "Walk-in Customer","customerPhone":phone or "—",
-            "subtotal":subtotal,"discount":discount,"total":total,"received":received,
-            "balance":balance,"paymentMethod":method,"paymentStatus":status,
-            "items":[{
-                "name":p["name"],"category":p["subcategory"] or p["category"],
-                "size":p["size"],"colour":p["colour"],"quantity":qty,
-                "price":price,"total":round(price*qty,2)
-            } for p,qty,price in checked]
-        })
-    except (ValueError, KeyError, sqlite3.Error) as e:
+            shop=dict(c.execute("SELECT * FROM settings WHERE id=1").fetchone())
+            response={
+                "ok":True,"bill_id":bid,"bill_no":bill_no,"receipt":{
+                    "shopName":shop["shop_name"],"address":shop["address"],"shopPhone":shop["phone"],
+                    "logoUrl":url_for("static",filename="uploads/"+shop["logo"]) if shop["logo"] else "",
+                    "billNumber":bill_no,"date":bill_created_at,
+                    "customerName":cname or "Walk-in Customer","customerPhone":phone or "—",
+                    "subtotal":float(subtotal),"discount":float(discount),"total":float(total),
+                    "received":float(received),"balance":float(balance),
+                    "paymentMethod":method,"paymentStatus":status,
+                    "items":[{
+                        "name":p["name"],"category":p["subcategory"] or p["category"],
+                        "size":p["size"],"colour":p["colour"],"quantity":qty,
+                        "price":float(price),"total":float((price*qty).quantize(Decimal("0.01")))
+                    } for p,qty,price in checked]
+                }
+            }
+            c.execute("""INSERT INTO bill_requests(idempotency_key,bill_id,response_json,created_at)
+                VALUES(?,?,?,?)""",(idempotency_key,bid,json.dumps(response,ensure_ascii=False),
+                datetime.now().isoformat(timespec="seconds")))
+        return jsonify(response)
+    except (ValueError, KeyError, TypeError, InvalidOperation) as e:
         return jsonify(error=str(e)),400
+    except mysql.connector.Error:
+        logging.exception("Database error while creating a bill; the transaction was rolled back.")
+        return jsonify(error="The bill could not be saved. No stock or payment changes were committed."),500
 
 def get_bill(bid):
     with db() as c:
@@ -645,6 +757,7 @@ def customers():
 def customer_save():
     name=request.form.get("name","").strip(); phone=request.form.get("phone","").strip()
     if not name: flash("Customer name is required.","danger")
+    elif len(name)>120 or len(phone)>32: flash("Customer name or phone is too long.","danger")
     else:
         try:
             with db() as c:
@@ -654,27 +767,39 @@ def customer_save():
                 audit(c,"created","customer",customer["id"],customer["phone"] or customer["name"],
                     dict(customer))
             flash("Customer added.","success")
-        except sqlite3.IntegrityError: flash("That phone number already exists.","warning")
+        except IntegrityError: flash("That phone number already exists.","warning")
     return redirect(url_for("customers"))
 
 @app.route("/bill/<int:bid>/payment",methods=["POST"])
 def add_payment(bid):
-    amount=float(request.form.get("amount") or 0); method=request.form.get("method","Cash")
-    if amount<=0: flash("Enter a payment amount greater than zero.","danger"); return redirect(url_for("receipt",bid=bid))
-    with db() as c:
-        b=c.execute("SELECT * FROM bills WHERE id=?",(bid,)).fetchone()
-        if not b: abort(404)
-        amount=min(amount,b["balance"])
-        received=round(b["received"]+amount,2); balance=round(b["total"]-received,2)
-        status="Paid" if balance==0 else "Partially Paid"
-        c.execute("UPDATE bills SET received=?,balance=?,payment_status=? WHERE id=?",(received,balance,status,bid))
-        cur=c.execute("INSERT INTO payments(bill_id,amount,method,created_at) VALUES(?,?,?,?)",
-            (bid,amount,method,datetime.now().isoformat(timespec="seconds")))
-        payment=c.execute("SELECT * FROM payments WHERE id=?",(cur.lastrowid,)).fetchone()
-        updated_bill=c.execute("SELECT * FROM bills WHERE id=?",(bid,)).fetchone()
-        audit(c,"created","payment",payment["id"],b["bill_no"],
-            {"payment":dict(payment),"bill_after":dict(updated_bill)})
-    flash("Payment recorded.","success")
+    method=request.form.get("method","Cash")
+    try:
+        amount=parse_amount(request.form.get("amount"),"Payment amount")
+        if amount<=0: raise ValueError("Enter a payment amount greater than zero.")
+        if method not in {"Cash","UPI","Card"}: raise ValueError("Choose a valid payment method.")
+        with db() as c:
+            c.execute("BEGIN IMMEDIATE")
+            b=c.execute("SELECT * FROM bills WHERE id=?",(bid,)).fetchone()
+            if not b: abort(404)
+            if amount>Decimal(str(b["balance"])):
+                raise ValueError("Payment amount cannot exceed the remaining balance.")
+            received=(Decimal(str(b["received"]))+amount).quantize(Decimal("0.01"))
+            balance=(Decimal(str(b["total"]))-received).quantize(Decimal("0.01"))
+            status="Paid" if balance==0 else "Partially Paid"
+            c.execute("UPDATE bills SET received=?,balance=?,payment_status=? WHERE id=?",
+                (float(received),float(balance),status,bid))
+            cur=c.execute("INSERT INTO payments(bill_id,amount,method,created_at) VALUES(?,?,?,?)",
+                (bid,float(amount),method,datetime.now().isoformat(timespec="seconds")))
+            payment=c.execute("SELECT * FROM payments WHERE id=?",(cur.lastrowid,)).fetchone()
+            updated_bill=c.execute("SELECT * FROM bills WHERE id=?",(bid,)).fetchone()
+            audit(c,"created","payment",payment["id"],b["bill_no"],
+                {"payment":dict(payment),"bill_after":dict(updated_bill)})
+        flash("Payment recorded.","success")
+    except ValueError as e:
+        flash(str(e),"danger")
+    except mysql.connector.Error:
+        logging.exception("Database error while recording a payment.")
+        flash("Could not record payment because of a database error. No changes were saved.","danger")
     return redirect(url_for("receipt",bid=bid))
 
 @app.route("/settings",methods=["GET","POST"])
@@ -682,16 +807,26 @@ def shop_settings():
     if request.method=="POST":
         f=request.form
         try:
+            shop_name=f.get("shop_name","").strip()
+            address=f.get("address","").strip()
+            phone=f.get("phone","").strip()
+            if not shop_name or not address:
+                raise ValueError("Shop name and address are required.")
+            if len(shop_name)>255 or len(address)>2000 or len(phone)>32:
+                raise ValueError("Shop name, address or phone exceeds its supported length.")
             logo=upload_image(request.files.get("logo"),"logo")
             with db() as c:
                 before=dict(c.execute("SELECT * FROM settings WHERE id=1").fetchone())
-                if logo: c.execute("UPDATE settings SET shop_name=?,address=?,phone=?,logo=? WHERE id=1",(f["shop_name"],f["address"],f.get("phone",""),logo))
-                else: c.execute("UPDATE settings SET shop_name=?,address=?,phone=? WHERE id=1",(f["shop_name"],f["address"],f.get("phone","")))
+                if logo: c.execute("UPDATE settings SET shop_name=?,address=?,phone=?,logo=? WHERE id=1",(shop_name,address,phone,logo))
+                else: c.execute("UPDATE settings SET shop_name=?,address=?,phone=? WHERE id=1",(shop_name,address,phone))
                 after=dict(c.execute("SELECT * FROM settings WHERE id=1").fetchone())
                 audit(c,"updated","shop settings",1,after["shop_name"],
                     {"before":before,"after":after})
             flash("Shop settings updated.","success")
         except ValueError as e: flash(str(e),"danger")
+        except mysql.connector.Error:
+            logging.exception("Database error while updating shop settings.")
+            flash("Could not save shop settings because of a database error. No changes were saved.","danger")
         return redirect(url_for("shop_settings"))
     return render_template("settings.html")
 
@@ -748,7 +883,7 @@ def clear_all_records():
             c.execute("""INSERT INTO inventory_migrations(migration_key,completed_at)
                 VALUES('clear-all-completed',?)""",(datetime.now().isoformat(timespec="seconds"),))
         flash("Current products, customers, bills, payments and stock history were cleared. Their snapshots remain in History & Excel.","success")
-    except sqlite3.Error as e:
+    except mysql.connector.Error as e:
         flash("Could not clear all records: "+str(e),"danger")
     return redirect(url_for("shop_settings"))
 
@@ -764,6 +899,11 @@ def export_rows(kind):
             return [dict(x) for x in c.execute("SELECT bill_no,created_at,customer_name,customer_phone,total,received,balance,payment_status FROM bills WHERE balance>0 ORDER BY id DESC")]
     return []
 
+def spreadsheet_safe(value):
+    if isinstance(value,str) and value.lstrip(" \t\r\n").startswith(("=","+","-","@")):
+        return "'"+value
+    return value
+
 @app.route("/export/<kind>/<fmt>")
 def export(kind,fmt):
     if kind not in {"sales","products","customers","pending"} or fmt not in {"csv","xlsx"}: abort(404)
@@ -771,14 +911,14 @@ def export(kind,fmt):
     columns=list(rows[0].keys()) if rows else ["No records"]
     if fmt=="csv":
         s=io.StringIO(); w=csv.DictWriter(s,fieldnames=columns); w.writeheader()
-        for r in rows: w.writerow(r)
+        for r in rows: w.writerow({key:spreadsheet_safe(value) for key,value in r.items()})
         data=io.BytesIO(s.getvalue().encode("utf-8-sig")); mime="text/csv"; ext="csv"
     else:
         wb=Workbook(); ws=wb.active; ws.title=kind.title()
         ws.append(columns)
         for cell in ws[1]:
             cell.font=Font(bold=True,color="FFFFFF"); cell.fill=PatternFill("solid",fgColor="B5122B")
-        for r in rows: ws.append([r.get(k) for k in columns])
+        for r in rows: ws.append([spreadsheet_safe(r.get(k)) for k in columns])
         for col in ws.columns:
             letter=col[0].column_letter
             ws.column_dimensions[letter].width=min(max(max(len(str(x.value or "")) for x in col)+2,12),32)
@@ -849,7 +989,17 @@ def reports():
         monthly=[dict(x) for x in c.execute("SELECT strftime('%Y-%m',created_at) month,SUM(total) total FROM bills GROUP BY month ORDER BY month DESC LIMIT 12")]
     return render_template("reports.html",categories=categories,tops=tops,monthly=monthly)
 
+@app.after_request
+def set_security_headers(response):
+    response.headers.setdefault("X-Content-Type-Options","nosniff")
+    response.headers.setdefault("X-Frame-Options","DENY")
+    response.headers.setdefault("Referrer-Policy","same-origin")
+    if APP_ENV == "production":
+        response.headers.setdefault("Strict-Transport-Security","max-age=31536000")
+    return response
+
 init_db()
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1",port=5000,debug=True)
+    app.run(host="127.0.0.1",port=int(os.environ.get("PORT","5001")),
+        debug=os.environ.get("FLASK_DEBUG","").lower()=="true" and APP_ENV!="production")

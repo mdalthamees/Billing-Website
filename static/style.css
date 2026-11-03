@@ -94,6 +94,9 @@
   .mobile-nav a:hover,.product-result:hover{transform:translateY(-2px)}
   .qty button:hover:not(:disabled){transform:scale(1.06);border-color:var(--red);color:var(--red)}
 }
+.sidebar-logout{margin:3px 0}
+.sidebar-logout button{display:block;width:100%;padding:12px 14px;border:0;border-radius:8px;background:transparent;color:#ccc;text-align:left;font-size:14px}
+.sidebar-logout button:hover{background:#393939;color:#fff}
 
 @media(max-width:900px){
   body.nav-open{overflow:hidden}

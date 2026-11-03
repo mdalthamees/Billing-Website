@@ -59,6 +59,7 @@
   <button class="btn btn-success" id="share-receipt" type="button" onclick="shareWhatsApp()">Share Receipt Image</button>
   <button class="btn btn-outline-success" type="button" onclick="downloadReceiptImage()">Download Bill Image</button>
   <form method="post" action="{{url_for('bill_delete',bid=bill.id)}}" onsubmit="return confirm('Delete this bill, its payments and sale history? Sold quantities will be returned to stock.')">
+    <input type="hidden" name="csrf_token" value="{{csrf_token()}}">
     <button class="btn btn-outline-danger" type="submit">Delete bill</button>
   </form>
 </div>
@@ -69,6 +70,7 @@
 <div class="panel no-print">
   <h5>Record Later Payment</h5>
   <form method="post" action="{{ url_for('add_payment', bid=bill.id) }}" class="row g-2">
+    <input type="hidden" name="csrf_token" value="{{csrf_token()}}">
     <div class="col-6"><input name="amount" type="number" min="0.01" max="{{ bill.balance }}" step="0.01" class="form-control" placeholder="Amount received" required></div>
     <div class="col-4"><select name="method" class="form-select"><option>Cash</option><option>UPI</option><option>Card</option></select></div>
     <div class="col-2"><button class="btn btn-danger">Save</button></div>
@@ -86,7 +88,7 @@
           <td data-label="Date">{{payment.created_at}}</td>
           <td data-label="Method">{{payment.method}}</td>
           <td data-label="Amount">₹{{'%.2f'|format(payment.amount)}}</td>
-          <td data-label="Action"><form method="post" action="{{url_for('payment_delete',payment_id=payment.id)}}" onsubmit="return confirm('Delete this payment and recalculate the bill balance?')"><button class="btn btn-sm btn-outline-danger">Delete payment</button></form></td>
+          <td data-label="Action"><form method="post" action="{{url_for('payment_delete',payment_id=payment.id)}}" onsubmit="return confirm('Delete this payment and recalculate the bill balance?')"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><button class="btn btn-sm btn-outline-danger">Delete payment</button></form></td>
         </tr>
       {% endfor %}</tbody>
     </table>

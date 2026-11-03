@@ -26,6 +26,7 @@
   <section class="panel stock-form-panel" id="stock-movement">
     <h5>Record stock in / out</h5>
     <form method="post" action="{{url_for('stock_movement')}}" class="row g-2">
+      <input type="hidden" name="csrf_token" value="{{csrf_token()}}">
       <div class="col-md-5"><label class="form-label" for="movement-product">Product</label>
         <select class="form-select" name="product_id" id="movement-product" required>
           <option value="">Select a product</option>
@@ -38,8 +39,8 @@
       <div class="col-6 col-md-2"><label class="form-label" for="movement-quantity">Quantity</label>
         <input class="form-control" type="number" name="quantity" id="movement-quantity" min="1" step="1" required>
       </div>
-      <div class="col-md-3"><label class="form-label" for="movement-note">Note</label>
-        <input class="form-control" name="note" id="movement-note" maxlength="160" placeholder="Optional reason">
+      <div class="col-md-3"><label class="form-label" for="movement-note">Reason</label>
+        <input class="form-control" name="note" id="movement-note" maxlength="160" placeholder="Reason for this movement" required>
       </div>
       <div class="col-12"><button class="btn btn-danger w-100 w-md-auto">Save movement</button></div>
     </form>
@@ -47,6 +48,7 @@
   <section class="panel stock-threshold-panel">
     <h5>Low-stock alert</h5>
     <form method="post" action="{{url_for('stock_settings')}}" class="threshold-form">
+      <input type="hidden" name="csrf_token" value="{{csrf_token()}}">
       <label class="form-label" for="minimum-stock">Alert when available stock is at or below</label>
       <div class="d-flex gap-2"><input class="form-control" type="number" name="minimum_stock" id="minimum-stock" min="0" step="1" value="{{minimum_stock}}" required>
         <button class="btn btn-outline-dark">Save</button></div>
@@ -102,7 +104,7 @@
           <td data-label="Note / Bill">{{movement.note or '—'}}{% if movement.bill_id %} · Bill #{{movement.bill_id}}{% endif %}</td>
           <td data-label="Action">
             {% if movement.movement_type in ['opening','stock_in','stock_out','adjustment_in','adjustment_out'] %}
-            <form method="post" action="{{url_for('stock_movement_delete',movement_id=movement.id)}}" onsubmit="return confirm('Delete this stock movement and reverse its quantity? Deletion is blocked if the units are no longer available.')"><button class="btn btn-sm btn-outline-danger">Delete</button></form>
+            <form method="post" action="{{url_for('stock_movement_delete',movement_id=movement.id)}}" onsubmit="return confirm('Delete this stock movement and reverse its quantity? Deletion is blocked if the units are no longer available.')"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><button class="btn btn-sm btn-outline-danger">Delete</button></form>
             {% elif movement.bill_id %}
             <a class="btn btn-sm btn-outline-dark" href="{{url_for('receipt',bid=movement.bill_id)}}">View bill</a>
             {% else %}<span class="text-muted small">Protected</span>{% endif %}
