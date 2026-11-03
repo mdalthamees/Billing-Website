@@ -9,6 +9,7 @@ __pycache__/
 .pytest_cache/
 .coverage
 .migration-backups/
+backups/
 instance/*.db
 static/uploads/*
 !static/uploads/.gitkeep

@@ -1,0 +1,52 @@
+{% extends "base.html" %}{% block content %}
+<div class="page-head">
+  <div><h1>Database backups</h1><p>Create a protected backup or restore a verified local snapshot.</p></div>
+  <form method="post" action="{{ url_for('create_database_backup') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button class="btn btn-danger" type="submit">Create backup now</button>
+  </form>
+</div>
+<section class="panel backup-notice">
+  <h5>Before restoring</h5>
+  <p>A restore replaces the current contents of this configured database. The selected file must be a verified backup for the same database and schema. A fresh safety backup is created first; never interrupt the application while restore is running.</p>
+  <p class="mb-0">Keep an additional encrypted copy outside this computer. Access is limited to the signed-in administrator.</p>
+</section>
+<section class="panel mt-3">
+  <div class="section-head"><h5>Backup history</h5><span class="muted">Successful backups are retained up to 30, without deleting the last valid one.</span></div>
+  <div class="table-responsive">
+    <table class="table mobile-card-table">
+      <thead><tr><th>Date and time</th><th>Status</th><th>Database</th><th>Size</th><th>Rows</th><th>File / result</th><th>Action</th></tr></thead>
+      <tbody>
+      {% for backup in backups %}
+        <tr>
+          <td data-label="Date and time">{{ backup.created_at }}</td>
+          <td data-label="Status">{{ backup.status|title }}</td>
+          <td data-label="Database">{{ backup.database }}</td>
+          <td data-label="Size">{{ "{:,}".format(backup.size_bytes) }} bytes</td>
+          <td data-label="Rows">{{ "{:,}".format(backup.row_count) if backup.status == "success" else "—" }}</td>
+          <td data-label="File / result"><span class="backup-filename">{{ backup.filename if backup.status == "success" else backup.message }}</span></td>
+          <td data-label="Action">
+          {% if backup.status == "success" %}
+            <a class="btn btn-outline-dark btn-sm" href="{{ url_for('download_database_backup', filename=backup.filename) }}">Download</a>
+            <form class="backup-restore-form" method="post" action="{{ url_for('restore_database_backup') }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="hidden" name="backup_filename" value="{{ backup.filename }}">
+              <label class="form-label" for="restore-confirm-{{ loop.index }}">Type RESTORE to replace current data</label>
+              <div class="input-group">
+                <input class="form-control" id="restore-confirm-{{ loop.index }}" name="confirm_restore" autocomplete="off" required>
+                <button class="btn btn-outline-danger" type="submit">Restore</button>
+              </div>
+            </form>
+          {% else %}
+            —
+          {% endif %}
+          </td>
+        </tr>
+      {% else %}
+        <tr><td colspan="7">No verified backups are available yet. Use “Create backup now” to create the first backup.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

@@ -10,6 +10,7 @@ MYSQL_TABLE_DDL = (
         shop_name VARCHAR(255) NOT NULL,
         address TEXT NOT NULL,
         phone VARCHAR(32) NOT NULL DEFAULT '',
+        whatsapp_phone VARCHAR(32) NOT NULL DEFAULT '',
         logo VARCHAR(255) NOT NULL DEFAULT '',
         CONSTRAINT chk_settings_id CHECK (id = 1)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
@@ -105,7 +106,11 @@ MYSQL_TABLE_DDL = (
         product_code VARCHAR(191) NOT NULL DEFAULT '',
         movement_type VARCHAR(32) NOT NULL,
         quantity INT NOT NULL,
+        previous_stock INT NULL,
+        resulting_stock INT NULL,
         note VARCHAR(255) NOT NULL DEFAULT '',
+        supplier VARCHAR(160) NOT NULL DEFAULT '',
+        unit_purchase_price DECIMAL(12,2) NULL,
         bill_id BIGINT NULL,
         created_at VARCHAR(32) NOT NULL,
         KEY ix_stock_movements_product_id (product_id),
@@ -146,6 +151,14 @@ MYSQL_TABLE_DDL = (
         source_fingerprint CHAR(64) NOT NULL,
         row_counts_json LONGTEXT NOT NULL,
         completed_at VARCHAR(32) NOT NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
+    """CREATE TABLE IF NOT EXISTS admin_login_attempts (
+        identifier CHAR(64) NOT NULL PRIMARY KEY,
+        failed_attempts SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+        window_started_at DATETIME NOT NULL,
+        locked_until DATETIME NULL,
+        updated_at DATETIME NOT NULL,
+        KEY ix_admin_login_locked_until (locked_until)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
 )
 
@@ -243,6 +256,7 @@ def configure_mysql(app_config):
             "DB_NAME",
             "DB_USER",
             "DB_PASSWORD",
+            "DB_SSL_CA",
             "DB_CONNECT_TIMEOUT",
         )
     }
@@ -253,6 +267,21 @@ def mysql_pool():
     if _pool is None:
         if _pool_config is None:
             raise RuntimeError("MySQL database settings have not been configured.")
+        local_hosts = {"localhost", "127.0.0.1", "::1", "[::1]", "localhost.localdomain"}
+        remote_host = str(_pool_config["DB_HOST"]).strip().lower() not in local_hosts
+        ssl_ca = _pool_config.get("DB_SSL_CA", "").strip()
+        if remote_host and not ssl_ca:
+            raise RuntimeError("DB_SSL_CA must point to a trusted CA certificate for remote MySQL connections.")
+        ssl_options = (
+            {
+                "ssl_ca": ssl_ca,
+                "ssl_verify_cert": True,
+                "ssl_verify_identity": True,
+                "ssl_disabled": False,
+            }
+            if remote_host
+            else {}
+        )
         _pool = pooling.MySQLConnectionPool(
             pool_name="hi5_pos",
             pool_size=int(_pool_config["MYSQL_POOL_SIZE"]),
@@ -266,6 +295,7 @@ def mysql_pool():
             use_unicode=True,
             autocommit=False,
             connection_timeout=int(_pool_config["DB_CONNECT_TIMEOUT"]),
+            **ssl_options,
         )
     return _pool
 
@@ -309,13 +339,48 @@ def initialize_mysql_schema(connection):
     try:
         for statement in MYSQL_TABLE_DDL:
             cursor.execute(statement)
+        ensure_stock_movement_columns(cursor)
+        ensure_settings_columns(cursor)
         ensure_mysql_constraints(cursor)
+        ensure_analytics_indexes(cursor)
         connection.commit()
     except Exception:
         connection.rollback()
         raise
     finally:
         cursor.close()
+
+
+def ensure_stock_movement_columns(cursor):
+    columns = (
+        ("previous_stock", "INT NULL"),
+        ("resulting_stock", "INT NULL"),
+        ("supplier", "VARCHAR(160) NOT NULL DEFAULT ''"),
+        ("unit_purchase_price", "DECIMAL(12,2) NULL"),
+    )
+    for name, definition in columns:
+        cursor.execute(
+            "SELECT 1 FROM information_schema.COLUMNS "
+            "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s AND COLUMN_NAME=%s",
+            ("stock_movements", name),
+        )
+        if cursor.fetchone() is None:
+            cursor.execute(
+                f"ALTER TABLE `stock_movements` ADD COLUMN `{name}` {definition}"
+            )
+
+
+def ensure_settings_columns(cursor):
+    cursor.execute(
+        "SELECT 1 FROM information_schema.COLUMNS "
+        "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='settings' "
+        "AND COLUMN_NAME='whatsapp_phone' LIMIT 1"
+    )
+    if cursor.fetchone() is None:
+        cursor.execute(
+            "ALTER TABLE `settings` ADD COLUMN `whatsapp_phone` "
+            "VARCHAR(32) NOT NULL DEFAULT '' AFTER `phone`"
+        )
 
 
 def ensure_mysql_constraints(cursor):
@@ -337,4 +402,20 @@ def ensure_mysql_constraints(cursor):
         if cursor.fetchone() is None:
             cursor.execute(
                 f"ALTER TABLE `{table}` ADD CONSTRAINT `{name}` {definition}"
+            )
+
+
+def ensure_analytics_indexes(cursor):
+    indexes = (
+        ("bill_items", "ix_bill_items_category_bill", "(category,bill_id)"),
+    )
+    for table, name, columns in indexes:
+        cursor.execute(
+            "SELECT 1 FROM information_schema.STATISTICS "
+            "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s AND INDEX_NAME=%s LIMIT 1",
+            (table, name),
+        )
+        if cursor.fetchone() is None:
+            cursor.execute(
+                f"CREATE INDEX `{name}` ON `{table}` {columns}"
             )

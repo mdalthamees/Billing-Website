@@ -49,17 +49,22 @@ Open **History & Excel** from the sidebar to review recent activity or download 
 - Product catalog with separate department, category, size and colour variants.
 - Cart billing across footwear and dress departments in one bill.
 - Stock validation and automatic stock deduction, with stock-in/out movement history and configurable low-stock alerts.
-- Stock Maintenance dashboard with live stock, sales, availability and product-level inventory totals.
+- Stock Maintenance dashboard with live stock, receipts, sales, availability, low/out-of-stock alerts and product-level inventory totals.
+- Stock In/Out history with previous/current quantities, timestamp, reason, and optional supplier and unit purchase price; bill deductions are transactional and idempotent.
 - Customer records and outstanding balances.
 - Individual product, customer, bill, payment and reversible stock-movement deletion; the Settings page also provides a confirmed clear-all option.
 - Permanent History & Excel archive for product/customer additions and edits, bills with line items and payments, stock movements, and deleted/cleared records. Download a workbook with separate activity, products, bills, bill-items, payments, stock, customer, and settings sheets.
 - Cash / UPI / Card payment and partial payments.
-- Printable receipt with shop logo; full-receipt image sharing to WhatsApp where supported, with a download fallback (no paid API).
-- After billing, the POS generates a PNG receipt and opens the device's native file-share flow when supported; WhatsApp links target +91 8667579407 without third-party APIs.
+- Sales history with customer-mobile search, filtered sales totals, payment method and receipt reprint links.
+- Printable receipt with shop logo, Tamil shop name and A4 / 80mm / 58mm print layouts; full-receipt image sharing to WhatsApp where supported, with a download fallback (no paid API).
+- Saved-bill receipt preview before printing, with A4 / 80mm / 58mm layouts and the browser printer-selection dialog. Thermal receipt image and table text wrap long names to avoid horizontal clipping.
+- Shop phone and WhatsApp numbers are configured in Shop Settings. Receipt sharing defaults to the saved customer phone, allows a different customer WhatsApp number, and uses the device share sheet where supported. Otherwise, download the PNG and attach it manually; WhatsApp web links do not attach images.
 - Sales history, filters, CSV and Excel exports.
+- Sales analytics dashboard with date presets/custom ranges, sales KPIs and trends, payment/category/product breakdowns, paginated product performance, stock alerts/history, and Excel/PDF report exports.
+- Purchase-cost-aware profit reporting. Sale-time cost is saved for new bills; older sales without a complete cost snapshot are excluded and identified rather than estimated.
 - Dashboard summary and sales chart.
 - Product/customer management and shop settings.
-- Responsive mobile navigation, card-based mobile tables, and reduced-motion-aware interface animations.
+- Responsive navigation, card-based mobile product and sales tables, and 44px touch targets through tablet widths. Layouts are checked at 360, 390, 430, 768, 1024 and 1440px; reduced-motion preferences are respected.
 
 ## Important
 This is a locally hosted single-shop application. Keep regular MySQL backups.

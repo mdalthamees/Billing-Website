@@ -97,9 +97,11 @@ python -m unittest discover -s tests -v
 
 1. Provision a managed MySQL-compatible production database with TLS and
    documented backup/restore, and test its recovery procedure.
-2. Set `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`,
-   `SECRET_KEY`, and `ADMIN_PASSWORD_HASH` in Vercel environment variables.
-   Never paste credentials into source or commit `.env`.
+2. Set `APP_ENV=production`, `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`,
+   `DB_PASSWORD`, `SECRET_KEY`, and `ADMIN_PASSWORD_HASH` in Vercel environment
+   variables. Provide `DB_SSL_CA` for a remote MySQL host and use a dedicated,
+   least-privilege database account. Never paste credentials into source or
+   commit `.env`.
 3. Configure image uploads to durable object storage.
 4. Add and validate Vercel's Flask entry point/configuration and bounded
    connections against a non-production database.

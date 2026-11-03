@@ -7,7 +7,7 @@
 
 <div class="stats stock-stats">
   <div class="stat"><span>Total Products</span><strong>{{stock_stats.total_products}}</strong><small>Product variants</small></div>
-  <div class="stat"><span>Total Stock Quantity</span><strong>{{stock_stats.total_stock_quantity}}</strong><small>Opening stock plus additions</small></div>
+  <div class="stat"><span>Total Stock Received</span><strong>{{stock_stats.total_stock_received}}</strong><small>Opening stock and recorded receipts</small></div>
   <div class="stat"><span>Total Products Sold</span><strong>{{stock_stats.total_products_sold}}</strong><small>From recorded bills</small></div>
   <div class="stat"><span>Available Stock</span><strong>{{stock_stats.available_stock}}</strong><small>Units currently on hand</small></div>
   <div class="stat"><span>Low Stock Products</span><strong>{{stock_stats.low_stock_products}}</strong><small>At or below {{minimum_stock}} units</small></div>
@@ -41,6 +41,12 @@
       </div>
       <div class="col-md-3"><label class="form-label" for="movement-note">Reason</label>
         <input class="form-control" name="note" id="movement-note" maxlength="160" placeholder="Reason for this movement" required>
+      </div>
+      <div class="col-md-6"><label class="form-label" for="movement-purchase-price">Unit purchase price <span class="text-muted">(Stock In only, optional)</span></label>
+        <input class="form-control" type="number" name="purchase_price" id="movement-purchase-price" min="0" max="999999999.99" step="0.01" inputmode="decimal">
+      </div>
+      <div class="col-md-6"><label class="form-label" for="movement-supplier">Supplier <span class="text-muted">(optional)</span></label>
+        <input class="form-control" name="supplier" id="movement-supplier" maxlength="160" autocomplete="organization">
       </div>
       <div class="col-12"><button class="btn btn-danger w-100 w-md-auto">Save movement</button></div>
     </form>
@@ -92,16 +98,22 @@
 <section class="panel mt-3">
   <div class="section-head"><div><h5>Stock movement history</h5><p>Latest 100 recorded additions, removals and sales</p></div></div>
   <div class="table-responsive">
-    <table class="table align-middle mobile-card-table">
-      <thead><tr><th>Date</th><th>Product</th><th>SKU</th><th>Movement</th><th>Quantity</th><th>Note / Bill</th><th>Action</th></tr></thead>
+    <table class="table align-middle mobile-card-table stock-history-table">
+      <thead><tr><th>Date and time</th><th>Product</th><th>SKU</th><th>Previous</th><th>Added</th><th>Removed</th><th>Current</th><th>Transaction</th><th>Supplier</th><th>Purchase price</th><th>Reason / Bill</th><th>Action</th></tr></thead>
       <tbody>
       {% for movement in movements %}
+        {% set is_out = movement.movement_type in ['stock_out','sale','adjustment_out'] %}
         <tr>
-          <td data-label="Date">{{movement.created_at}}</td><td data-label="Product">{{movement.display_name}}</td>
+          <td data-label="Date and time">{{movement.created_at}}</td><td data-label="Product">{{movement.display_name}}</td>
           <td data-label="SKU">{{movement.display_code}}</td>
-          <td data-label="Movement">{{movement.movement_type|replace('_',' ')|title}}</td>
-          <td data-label="Quantity">{{'−' if movement.movement_type in ['stock_out','sale','adjustment_out'] else '+'}}{{movement.quantity}}</td>
-          <td data-label="Note / Bill">{{movement.note or '—'}}{% if movement.bill_id %} · Bill #{{movement.bill_id}}{% endif %}</td>
+          <td data-label="Previous quantity">{{movement.previous_stock if movement.previous_stock is not none else '—'}}</td>
+          <td data-label="Quantity added">{{movement.quantity if not is_out else '—'}}</td>
+          <td data-label="Quantity removed">{{movement.quantity if is_out else '—'}}</td>
+          <td data-label="Current quantity">{{movement.resulting_stock if movement.resulting_stock is not none else '—'}}</td>
+          <td data-label="Transaction type">{{movement.movement_type|replace('_',' ')|title}}</td>
+          <td data-label="Supplier">{{movement.supplier or '—'}}</td>
+          <td data-label="Purchase price">{% if movement.unit_purchase_price is not none %}₹{{'%.2f'|format(movement.unit_purchase_price)}}{% else %}—{% endif %}</td>
+          <td data-label="Reason / Bill">{{movement.note or '—'}}{% if movement.bill_id %} · Bill #{{movement.bill_id}}{% endif %}</td>
           <td data-label="Action">
             {% if movement.movement_type in ['opening','stock_in','stock_out','adjustment_in','adjustment_out'] %}
             <form method="post" action="{{url_for('stock_movement_delete',movement_id=movement.id)}}" onsubmit="return confirm('Delete this stock movement and reverse its quantity? Deletion is blocked if the units are no longer available.')"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><button class="btn btn-sm btn-outline-danger">Delete</button></form>
@@ -111,7 +123,7 @@
           </td>
         </tr>
       {% else %}
-        <tr><td colspan="7" class="stock-empty">No stock movements have been recorded.</td></tr>
+        <tr><td colspan="12" class="stock-empty">No stock movements have been recorded.</td></tr>
       {% endfor %}
       </tbody>
     </table>

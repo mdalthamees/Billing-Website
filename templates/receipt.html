@@ -16,14 +16,16 @@
     <div class="logo-text receipt-logo-fallback" aria-label="{{ shop.shop_name }} logo">HI-5</div>
     {% endif %}
     <h2>{{ shop.shop_name }}</h2>
-    <p>{{ shop.address }}</p>
+    <p class="receipt-tamil-name" lang="ta">கருப்பு கடை</p>
+    <p>{{ receipt_address }}</p>
     {% if shop.phone %}<p>{{ shop.phone }}</p>{% endif %}
+    {% if shop.whatsapp_phone %}<p>WhatsApp: {{ shop.whatsapp_phone }}</p>{% endif %}
     <div class="receipt-title">SALES RECEIPT</div>
   </header>
 
   <div class="receipt-meta">
     <span><b>Bill No:</b> {{ bill.bill_no }}</span>
-    <span><b>Date:</b> {{ bill.created_at }}</span>
+    <span><b>Date:</b> <time datetime="{{ bill.created_at }}">{{ bill.created_at|replace('T',' ') }}</time></span>
     <span><b>Customer:</b> {{ bill.customer_name or 'Walk-in Customer' }}</span>
     <span><b>Phone:</b> {{ bill.customer_phone or '—' }}</span>
   </div>
@@ -33,7 +35,7 @@
     <tbody>
       {% for item in items %}
       <tr>
-        <td data-label="Item">{{ item.product_name }}<small class="d-block">{{ item.category }} · {{ item.size }} · {{ item.colour }}</small></td>
+        <td data-label="Item">{{ item.product_name }}<small class="d-block">{{ [item.category, item.size, item.colour]|select|join(' · ') or '—' }}</small></td>
         <td data-label="Qty">{{ item.quantity }}</td>
         <td data-label="Price">₹{{ '%.2f'|format(item.price) }}</td>
         <td data-label="Total">₹{{ '%.2f'|format(item.line_total) }}</td>
@@ -55,16 +57,41 @@
 </section>
 
 <div class="receipt-actions d-flex flex-wrap gap-2 justify-content-center my-3 no-print">
-  <button class="btn btn-dark" type="button" onclick="window.print()">Print Receipt</button>
-  <button class="btn btn-success" id="share-receipt" type="button" onclick="shareWhatsApp()">Share Receipt Image</button>
-  <button class="btn btn-outline-success" type="button" onclick="downloadReceiptImage()">Download Bill Image</button>
+  <label class="receipt-print-format">Print format
+    <select class="form-select" id="receipt-print-format" aria-label="Receipt print format">
+      <option value="a4">A4 invoice</option>
+      <option value="80mm">80mm thermal</option>
+      <option value="58mm">58mm thermal</option>
+    </select>
+  </label>
+  <button class="btn btn-outline-dark" id="preview-receipt" type="button">Preview print</button>
+  <label class="receipt-recipient">Customer WhatsApp number
+    <input class="form-control" id="receipt-recipient" type="tel" inputmode="tel"
+      autocomplete="tel" value="{{ bill.customer_phone }}"
+      placeholder="Country code + number" aria-describedby="recipient-help">
+  </label>
+  <button class="btn btn-success" id="share-receipt" type="button">Share receipt image</button>
+  <button class="btn btn-outline-success" id="download-receipt" type="button">Download receipt image</button>
   <form method="post" action="{{url_for('bill_delete',bid=bill.id)}}" onsubmit="return confirm('Delete this bill, its payments and sale history? Sold quantities will be returned to stock.')">
     <input type="hidden" name="csrf_token" value="{{csrf_token()}}">
     <button class="btn btn-outline-danger" type="submit">Delete bill</button>
   </form>
 </div>
 <p class="receipt-share-status no-print" id="receipt-share-status" role="status" aria-live="polite"></p>
-<p class="receipt-share-status no-print">Image sharing opens your device's share options. Choose WhatsApp and the +91 8667579407 conversation. WhatsApp does not allow websites to preselect a recipient or attach an image through a share link.</p>
+<a class="receipt-share-link no-print" id="whatsapp-chat-link" target="_blank"
+  rel="noopener noreferrer" hidden>Open WhatsApp message</a>
+<p class="receipt-share-help no-print" id="recipient-help">On supported mobile browsers, Share opens your device's share sheet; choose WhatsApp and the intended customer. Otherwise, the receipt image downloads and WhatsApp opens with the bill number, date and total pre-filled. Attach the image manually. WhatsApp Web links cannot attach images.</p>
+
+<dialog class="receipt-preview no-print" id="receipt-preview-dialog" aria-labelledby="receipt-preview-title">
+  <div class="receipt-preview-head">
+    <h2 id="receipt-preview-title">Print preview · <span id="preview-format-label">A4 invoice</span></h2>
+    <button class="btn btn-outline-dark btn-sm" type="button" id="close-receipt-preview">Close preview</button>
+  </div>
+  <div class="receipt-preview-content" id="receipt-preview-content"></div>
+  <div class="receipt-preview-actions">
+    <button class="btn btn-danger" type="button" id="print-from-preview">Print / choose printer</button>
+  </div>
+</dialog>
 
 {% if bill.balance > 0 %}
 <div class="panel no-print">
@@ -115,8 +142,10 @@ const receiptItems = [
 ];
 const receiptData = {
   shopName: {{ shop.shop_name|tojson }},
-  address: {{ shop.address|tojson }},
+  tamilName: "கருப்பு கடை",
+  address: {{ receipt_address|tojson }},
   shopPhone: {{ shop.phone|tojson }},
+  shopWhatsApp: {{ shop.whatsapp_phone|tojson }},
   logoUrl: {{ (url_for('static', filename='uploads/' + shop.logo) if shop.logo else '')|tojson }},
   billNumber: {{ bill.bill_no|tojson }},
   date: {{ bill.created_at|tojson }},
@@ -137,7 +166,26 @@ function setShareStatus(message, isError) {
   shareStatus.classList.toggle("is-error", Boolean(isError));
 }
 
-function receiptImageFile() {
+document.getElementById("receipt-print-format").addEventListener("change", (event) => {
+  document.body.classList.remove("print-format-58mm", "print-format-80mm", "print-format-a4");
+  document.body.classList.add("print-format-" + event.target.value);
+  document.getElementById("preview-format-label").textContent =
+    event.target.selectedOptions[0].textContent;
+});
+document.body.classList.add("print-format-a4");
+document.getElementById("preview-receipt").addEventListener("click", () => {
+  const previewContent = document.getElementById("receipt-preview-content");
+  previewContent.replaceChildren(document.getElementById("receipt").cloneNode(true));
+  document.getElementById("receipt-preview-dialog").showModal();
+});
+document.getElementById("close-receipt-preview").addEventListener("click", () => {
+  document.getElementById("receipt-preview-dialog").close();
+});
+document.getElementById("print-from-preview").addEventListener("click", () => window.print());
+document.getElementById("download-receipt").addEventListener("click", downloadReceiptImage);
+document.getElementById("share-receipt").addEventListener("click", shareWhatsApp);
+
+async function receiptImageFile() {
   const width = 960;
   const padding = 64;
   const contentWidth = width - padding * 2;
@@ -152,17 +200,32 @@ function receiptImageFile() {
     const words = String(text || "").split(/\s+/).filter(Boolean);
     if (!words.length) return [""];
     const lines = [];
-    let line = words[0];
-    for (const word of words.slice(1)) {
-      const candidate = line + " " + word;
-      if (context.measureText(candidate).width > maxWidth && line) {
-        lines.push(line);
-        line = word;
-      } else {
+    let line = "";
+    const graphemes = (word) => {
+      if (Intl.Segmenter) {
+        return Array.from(new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(word),
+          (segment) => segment.segment);
+      }
+      return Array.from(word);
+    };
+    for (const word of words) {
+      const candidate = line ? line + " " + word : word;
+      if (context.measureText(candidate).width <= maxWidth) {
         line = candidate;
+        continue;
+      }
+      if (line) lines.push(line);
+      line = "";
+      for (const character of graphemes(word)) {
+        if (line && context.measureText(line + character).width > maxWidth) {
+          lines.push(line);
+          line = character;
+        } else {
+          line += character;
+        }
       }
     }
-    lines.push(line);
+    if (line) lines.push(line);
     return lines;
   }
 
@@ -187,8 +250,11 @@ function receiptImageFile() {
   }
 
   addCentered(receiptData.shopName, "700 30px Arial, sans-serif", "#171717", 38);
+  if (document.fonts) await document.fonts.ready;
+  addCentered(receiptData.tamilName, "700 22px 'Noto Sans Tamil', 'Nirmala UI', Arial, sans-serif", "#171717", 30);
   addCentered(receiptData.address, "18px Arial, sans-serif", "#626262", 25);
-  if (receiptData.shopPhone) addCentered(receiptData.shopPhone, "18px Arial, sans-serif", "#626262", 25);
+  if (receiptData.shopPhone) addCentered("Phone: " + receiptData.shopPhone, "18px Arial, sans-serif", "#626262", 25);
+  if (receiptData.shopWhatsApp) addCentered("WhatsApp: " + receiptData.shopWhatsApp, "18px Arial, sans-serif", "#626262", 25);
   y += 10;
   addCentered("S A L E S   R E C E I P T", "700 18px Arial, sans-serif", "#171717", 27);
   y += 16;
@@ -224,7 +290,7 @@ function receiptImageFile() {
   for (const item of receiptItems) {
     const detail = [item.category, item.size, item.colour].filter(Boolean).join(" · ");
     const nameLines = wrapText(item.name, "17px Arial, sans-serif", 350);
-    const detailLines = wrapText(detail, "14px Arial, sans-serif", 350);
+    const detailLines = detail ? wrapText(detail, "14px Arial, sans-serif", 350) : [];
     const rowHeight = Math.max(58, nameLines.length * 22 + detailLines.length * 19 + 10);
     nameLines.forEach((line, index) => {
       layout.push({ type: "text", text: line, x: columns.item, y: y + 18 + index * 22, font: "17px Arial, sans-serif", color: "#242424", align: "left" });
@@ -297,9 +363,15 @@ function receiptImageFile() {
     }
   }
 
-  const imageData = canvas.toDataURL("image/png");
-  const bytes = Uint8Array.from(atob(imageData.split(",")[1]), (character) => character.charCodeAt(0));
-  return new File([bytes], receiptData.billNumber + ".png", { type: "image/png" });
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        reject(new Error("Your browser could not encode the receipt image."));
+        return;
+      }
+      resolve(new File([blob], receiptData.billNumber + ".png", { type: "image/png" }));
+    }, "image/png");
+  });
 }
 
 function downloadFile(file) {
@@ -313,46 +385,81 @@ function downloadFile(file) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-function whatsappUrl(message) {
-  return whatsappReceiptUrl(message);
+function recipientNumber() {
+  const raw = document.getElementById("receipt-recipient").value.trim();
+  if (!raw) return "";
+  if (!/^[0-9+().\s-]+$/.test(raw)) {
+    throw new Error("Enter a valid customer WhatsApp number or leave it blank to choose a contact in WhatsApp.");
+  }
+  const digits = raw.replace(/\D/g, "");
+  if (digits.length < 7 || digits.length > 15) {
+    throw new Error("Customer WhatsApp number must contain 7 to 15 digits, including its country code.");
+  }
+  return digits;
 }
 
-function downloadReceiptImage() {
+function whatsappMessage() {
+  return "HI-5 receipt for " + receiptData.customerName + ". Bill " +
+    receiptData.billNumber + ". Date: " + new Date(receiptData.date.replace(" ", "T")).toLocaleString("en-IN") +
+    ". Grand total: ₹" + Number(receiptData.total).toFixed(2) + ".";
+}
+
+async function downloadReceiptImage() {
   try {
-    downloadFile(receiptImageFile());
-    setShareStatus("Bill image downloaded. Attach it in the +91 8667579407 WhatsApp conversation.", false);
+    const file = await receiptImageFile();
+    downloadFile(file);
+    setShareStatus("Receipt image downloaded. Attach it to the customer's WhatsApp chat.", false);
+    updateWhatsAppLink();
   } catch (error) {
     setShareStatus(error.message || "Could not create the bill image. Please try Print Receipt instead.", true);
   }
+}
+
+function updateWhatsAppLink(message, recipient) {
+  const link = document.getElementById("whatsapp-chat-link");
+  link.href = whatsappReceiptUrl(
+    message || whatsappMessage(), recipient === undefined ? recipientNumber() : recipient
+  );
+  link.hidden = false;
 }
 
 async function shareWhatsApp() {
   const button = document.getElementById("share-receipt");
   button.disabled = true;
   setShareStatus("Preparing your bill image…", false);
+  let whatsappWindow = null;
   try {
-    const file = receiptImageFile();
-    const message = "HI-5 receipt " + receiptData.billNumber + " · Grand total: ₹" + Number(receiptData.total).toFixed(2) + " · Intended recipient: +91 8667579407.";
-    if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+    const recipient = recipientNumber();
+    const message = whatsappMessage();
+    const nativeFileShare = navigator.share && navigator.canShare &&
+      navigator.canShare({ files: [new File([""], "receipt.png", { type: "image/png" })] });
+    whatsappWindow = nativeFileShare ? null : window.open("about:blank", "_blank");
+    const file = await receiptImageFile();
+    if (nativeFileShare && navigator.canShare({ files: [file] })) {
       try {
         await navigator.share({ files: [file], title: receiptData.billNumber, text: message });
-        setShareStatus("Choose WhatsApp and the +91 8667579407 conversation in your device's share options.", false);
+        setShareStatus("Choose WhatsApp and the intended customer in your device's share options.", false);
       } catch (error) {
         if (error.name === "AbortError") {
           setShareStatus("Sharing cancelled. Your receipt is unchanged.", false);
           return;
         } else {
           downloadFile(file);
-          window.open(whatsappUrl(message + " The bill image was downloaded; attach it to send the full receipt."), "_blank", "noopener");
-          setShareStatus("Direct image sharing is unavailable. Attach the downloaded image in the +91 8667579407 WhatsApp conversation.", false);
+          const link = whatsappReceiptUrl(message + " The receipt image was downloaded; attach it to send the full bill.", recipient);
+          if (whatsappWindow && !whatsappWindow.closed) whatsappWindow.location.href = link;
+          updateWhatsAppLink(message + " The receipt image was downloaded; attach it to send the full bill.", recipient);
+          setShareStatus("Direct image sharing is unavailable. Attach the downloaded image in the customer's WhatsApp chat.", false);
         }
       }
       return;
     }
     downloadFile(file);
-    window.open(whatsappUrl(message + " The bill image was downloaded; attach it to send the full receipt."), "_blank", "noopener");
-    setShareStatus("Bill image downloaded. Attach it in the +91 8667579407 WhatsApp conversation.", false);
+    const link = whatsappReceiptUrl(message + " The receipt image was downloaded; attach it to send the full bill.", recipient);
+    if (whatsappWindow && !whatsappWindow.closed) whatsappWindow.location.href = link;
+    updateWhatsAppLink(message + " The receipt image was downloaded; attach it to send the full bill.", recipient);
+    setShareStatus("Receipt image downloaded. Attach it in the customer's WhatsApp chat.", false);
   } catch (error) {
+    if (whatsappWindow && !whatsappWindow.closed) whatsappWindow.close();
     setShareStatus(error.message || "Could not share the bill. Download the receipt image and attach it in WhatsApp.", true);
   } finally {
     button.disabled = false;

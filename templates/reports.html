@@ -1,7 +1,217 @@
-{% extends "base.html" %}{% block content %}<div class="page-head"><div><h1>Reports & Analytics</h1><p>Category performance and top-selling products</p></div></div>
-<div class="grid-two"><section class="panel"><h5>Category-wise Sales</h5><canvas id="catChart"></canvas></section><section class="panel"><h5>Monthly Sales</h5><canvas id="monthChart"></canvas></section></div>
-<div class="panel mt-3"><h5>Top Selling Products</h5><div class="table-responsive"><table class="table mobile-card-table"><thead><tr><th>Product</th><th>Quantity Sold</th><th>Sales</th></tr></thead><tbody>{% for p in tops %}<tr><td data-label="Product">{{p.product_name}}</td><td data-label="Quantity Sold">{{p.qty}}</td><td data-label="Sales">₹{{'%.2f'|format(p.total)}}</td></tr>{% else %}<tr><td colspan="3">No sales yet.</td></tr>{% endfor %}</tbody></table></div></div>
-{% endblock %}{% block scripts %}<script src="https://cdn.jsdelivr.net/npm/chart.js"></script><script>
-new Chart(document.getElementById('catChart'),{type:'doughnut',data:{labels:{{categories|map(attribute='category')|list|tojson}},datasets:[{data:{{categories|map(attribute='total')|list|tojson}}}]},options:{responsive:true}});
-new Chart(document.getElementById('monthChart'),{type:'bar',data:{labels:{{monthly|map(attribute='month')|list|reverse|list|tojson}},datasets:[{label:'Sales ₹',data:{{monthly|map(attribute='total')|list|reverse|list|tojson}},backgroundColor:'#b5122b'}]},options:{responsive:true}});
-</script>{% endblock %}
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head analytics-head">
+  <div>
+    <p class="analytics-eyebrow">HI-5 · BUSINESS INTELLIGENCE</p>
+    <h1>Sales analytics</h1>
+    <p>Sales, product performance, inventory and margin from your recorded transactions.</p>
+  </div>
+  <div class="report-exports">
+    <a class="btn btn-outline-dark" href="{{ url_for('export_report', fmt='xlsx', period=filters.period, start=filters.start, end=filters.end, product_id=filters.product_id or '', category=filters.category) }}">Export Excel</a>
+    <a class="btn btn-danger" href="{{ url_for('export_report', fmt='pdf', period=filters.period, start=filters.start, end=filters.end, product_id=filters.product_id or '', category=filters.category) }}">Export PDF</a>
+  </div>
+</div>
+
+<form class="panel analytics-filters" method="get" action="{{ url_for('reports') }}">
+  <label>Period
+    <select class="form-select" name="period">
+      {% for value,label in [('today','Today'),('yesterday','Yesterday'),('this_week','This week'),('this_month','This month'),('this_year','This year'),('custom','Custom range')] %}
+      <option value="{{ value }}" {% if filters.period==value %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>From
+    <input class="form-control" type="date" name="start" value="{{ filters.start }}">
+  </label>
+  <label>To
+    <input class="form-control" type="date" name="end" value="{{ filters.end }}">
+  </label>
+  <label>Product
+    <select class="form-select" name="product_id">
+      <option value="">All products</option>
+      {% for product in product_options %}
+      <option value="{{ product.id }}" {% if filters.product_id==product.id %}selected{% endif %}>{{ product.name }} · {{ product.code }}{% if product.size %} · {{ product.size }}{% endif %}{% if product.colour %} / {{ product.colour }}{% endif %}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Category
+    <select class="form-select" name="category">
+      <option value="">All categories</option>
+      {% for category in categories %}
+      <option value="{{ category }}" {% if filters.category==category %}selected{% endif %}>{{ category }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <button class="btn btn-danger" type="submit">Apply filters</button>
+  <p class="filter-note">Date range applies to sales and stock history. Product and category narrow item analytics and stock lists; bill KPIs and payment totals remain whole-bill values, and inventory KPI totals include the full catalog.</p>
+</form>
+
+<section aria-label="Sales and inventory key performance indicators">
+  <div class="analytics-kpis">
+    <article class="analytics-kpi"><span>Today's sales</span><strong>₹{{ '%.2f'|format(summary.today_sales) }}</strong><small>All bills today</small></article>
+    <article class="analytics-kpi"><span>This month's sales</span><strong>₹{{ '%.2f'|format(summary.month_sales) }}</strong><small>Month to date</small></article>
+    <article class="analytics-kpi"><span>This year's sales</span><strong>₹{{ '%.2f'|format(summary.year_sales) }}</strong><small>Year to date</small></article>
+    <article class="analytics-kpi"><span>Total bills</span><strong>{{ summary.bill_count }}</strong><small>{{ filters.start }} to {{ filters.end }}</small></article>
+    <article class="analytics-kpi"><span>Total products</span><strong>{{ inventory.total_products }}</strong><small>Current catalog</small></article>
+    <article class="analytics-kpi"><span>Available stock</span><strong>{{ inventory.available_stock }}</strong><small>Units on hand</small></article>
+    <article class="analytics-kpi"><span>Average bill value</span><strong>₹{{ '%.2f'|format(summary.average_bill) }}</strong><small>Selected date range</small></article>
+    <article class="analytics-kpi analytics-kpi-dark"><span>Selected-range sales</span><strong>₹{{ '%.2f'|format(summary.period_sales) }}</strong><small>{{ summary.bill_count }} bill{{ '' if summary.bill_count==1 else 's' }} · received ₹{{ '%.2f'|format(summary.received) }}</small></article>
+  </div>
+</section>
+
+<section class="analytics-section">
+  <div class="analytics-section-title"><div><p class="analytics-eyebrow">SALES PERFORMANCE</p><h2>Trends and mix</h2></div></div>
+  <div class="analytics-chart-grid">
+    {% for key,title in [('daily','Daily sales trend'),('weekly','Weekly sales trend'),('monthly','Monthly sales trend'),('yearly','Yearly sales comparison')] %}
+    <article class="panel analytics-chart-panel">
+      <h3>{{ title }}</h3>
+      {% if trends[key] %}
+      <div class="analytics-chart-wrap"><p class="analytics-chart-loading" role="status">Loading chart…</p><canvas id="{{ key }}SalesChart" role="img" aria-label="{{ title }}" hidden></canvas></div>
+      {% else %}<p class="analytics-empty">No sales recorded in this date range.</p>{% endif %}
+    </article>
+    {% endfor %}
+    <article class="panel analytics-chart-panel">
+      <h3>Payment method breakdown</h3>
+      {% if payment_methods %}
+      <div class="analytics-chart-wrap"><p class="analytics-chart-loading" role="status">Loading chart…</p><canvas id="paymentChart" role="img" aria-label="Collected payment amounts by payment method" hidden></canvas></div>
+      {% else %}<p class="analytics-empty">No bills in this date range.</p>{% endif %}
+    </article>
+    <article class="panel analytics-chart-panel">
+      <h3>Category-wise sales</h3>
+      {% if category_sales %}
+      <div class="analytics-chart-wrap"><p class="analytics-chart-loading" role="status">Loading chart…</p><canvas id="categoryChart" role="img" aria-label="Net sales by category" hidden></canvas></div>
+      {% else %}<p class="analytics-empty">No product sales in this date range.</p>{% endif %}
+    </article>
+    <article class="panel analytics-chart-panel">
+      <h3>Top 10 selling products</h3>
+      {% if top_products|selectattr('quantity_sold')|list %}
+      <div class="analytics-chart-wrap"><p class="analytics-chart-loading" role="status">Loading chart…</p><canvas id="topProductsChart" role="img" aria-label="Top ten products by quantity sold" hidden></canvas></div>
+      {% else %}<p class="analytics-empty">No products sold in this date range.</p>{% endif %}
+    </article>
+  </div>
+</section>
+
+<section class="panel analytics-profit">
+  <div>
+    <p class="analytics-eyebrow">COST-AWARE REPORTING</p>
+    <h2>Profit analytics</h2>
+    {% if profit.cost_complete_groups %}
+    <strong class="profit-value">₹{{ '%.2f'|format(profit.available_profit) }}</strong>
+    <p>Recorded gross profit for {{ profit.cost_complete_groups }} bill/product group{{ '' if profit.cost_complete_groups==1 else 's' }} with a complete purchase-cost snapshot.</p>
+    {% else %}
+    <strong class="profit-unavailable">Unavailable</strong>
+    <p>No sale in this selection has a complete recorded purchase-cost snapshot. Profit is not estimated from current product prices.</p>
+    {% endif %}
+  </div>
+  <aside class="profit-note">
+    <b>How this is calculated</b>
+    <p>Net item sales are allocated from the saved bill total in proportion to each line's recorded value. Cost uses the purchase price saved on each stock-out at sale time.</p>
+    {% if profit.missing_cost_units %}<p>{{ profit.missing_cost_units }} sold unit{{ '' if profit.missing_cost_units==1 else 's' }} are excluded because historical purchase cost is missing or incomplete.</p>{% endif %}
+  </aside>
+</section>
+
+<section class="analytics-section">
+  <div class="analytics-section-title"><div><p class="analytics-eyebrow">PRODUCT PERFORMANCE</p><h2>Best, least and product-wise sales</h2></div></div>
+  <div class="grid-two analytics-ranking-grid">
+    <article class="panel">
+      <h3>Best-selling products</h3>
+      {% if top_products|selectattr('quantity_sold')|list %}
+      <div class="table-responsive"><table class="table mobile-card-table analytics-table"><thead><tr><th>Product</th><th>Qty sold</th><th>Net sales</th></tr></thead><tbody>
+      {% for product in top_products if product.quantity_sold %}<tr><td data-label="Product">{{ product.name }} <small>{{ product.code }} · {{ product.size }} / {{ product.colour }}</small></td><td data-label="Qty sold">{{ product.quantity_sold }}</td><td data-label="Net sales">₹{{ '%.2f'|format(product.revenue) }}</td></tr>{% endfor %}
+      </tbody></table></div>
+      {% else %}<p class="analytics-empty">No sales recorded for these filters.</p>{% endif %}
+    </article>
+    <article class="panel">
+      <h3>Least-selling products</h3>
+      {% if least_products %}
+      <div class="table-responsive"><table class="table mobile-card-table analytics-table"><thead><tr><th>Product</th><th>Qty sold</th><th>Net sales</th></tr></thead><tbody>
+      {% for product in least_products %}<tr><td data-label="Product">{{ product.name }} <small>{{ product.code }} · {{ product.size }} / {{ product.colour }}</small></td><td data-label="Qty sold">{{ product.quantity_sold }}</td><td data-label="Net sales">₹{{ '%.2f'|format(product.revenue) }}</td></tr>{% endfor %}
+      </tbody></table></div>
+      {% else %}<p class="analytics-empty">No products match these filters.</p>{% endif %}
+    </article>
+  </div>
+  <article class="panel mt-3">
+    <div class="section-head"><div><h3>Product-wise quantity and revenue</h3><p class="muted">{{ product_total }} products · net revenue after proportional bill discounts</p></div></div>
+    {% if products %}
+    <div class="table-responsive"><table class="table mobile-card-table analytics-table"><thead><tr><th>Product</th><th>Category</th><th>Quantity sold</th><th>Net revenue</th></tr></thead><tbody>
+    {% for product in products %}<tr><td data-label="Product">{{ product.name }} <small>{{ product.code }} · {{ product.size }} / {{ product.colour }}</small></td><td data-label="Category">{{ product.category }}</td><td data-label="Quantity sold">{{ product.quantity_sold }}</td><td data-label="Net revenue">₹{{ '%.2f'|format(product.revenue) }}</td></tr>{% endfor %}
+    </tbody></table></div>
+    {% else %}<p class="analytics-empty">No products match these filters.</p>{% endif %}
+    {% if page_count > 1 %}
+    <nav class="analytics-pagination" aria-label="Product analytics pages">
+      <span>Page {{ filters.page }} of {{ page_count }}</span>
+      {% if filters.page > 1 %}<a class="btn btn-outline-dark btn-sm" href="{{ url_for('reports', period=filters.period, start=filters.start, end=filters.end, product_id=filters.product_id or '', category=filters.category, page=filters.page-1) }}">Previous</a>{% endif %}
+      {% if filters.page < page_count %}<a class="btn btn-outline-dark btn-sm" href="{{ url_for('reports', period=filters.period, start=filters.start, end=filters.end, product_id=filters.product_id or '', category=filters.category, page=filters.page+1) }}">Next</a>{% endif %}
+    </nav>
+    {% endif %}
+  </article>
+</section>
+
+<section class="analytics-section">
+  <div class="analytics-section-title"><div><p class="analytics-eyebrow">INVENTORY HEALTH</p><h2>Stock analytics</h2></div></div>
+  <div class="analytics-stock-kpis">
+    <article class="panel"><span>Available stock</span><strong>{{ inventory.available_stock }}</strong><small>Units across {{ inventory.total_products }} products</small></article>
+    <article class="panel"><span>Low-stock products</span><strong>{{ inventory.low_stock }}</strong><small>At or below {{ minimum_stock }} units</small></article>
+    <article class="panel"><span>Out-of-stock products</span><strong>{{ inventory.out_of_stock }}</strong><small>Currently unavailable</small></article>
+  </div>
+  <div class="grid-two analytics-ranking-grid">
+    <article class="panel"><h3>Low-stock products</h3>
+      {% for product in low_stock %}<div class="list-row"><span>{{ product.name }} <small>{{ product.code }} · {{ product.size }} / {{ product.colour }}</small></span><b class="text-danger">{{ product.stock }} left</b></div>
+      {% else %}<p class="analytics-empty">No low-stock products match these filters.</p>{% endfor %}
+      {% if inventory.low_stock > low_stock|length %}<a href="{{ url_for('stock_maintenance') }}">Review all stock alerts</a>{% endif %}
+    </article>
+    <article class="panel"><h3>Out-of-stock products</h3>
+      {% for product in out_of_stock %}<div class="list-row"><span>{{ product.name }} <small>{{ product.code }} · {{ product.size }} / {{ product.colour }}</small></span><b class="text-danger">Out of stock</b></div>
+      {% else %}<p class="analytics-empty">No out-of-stock products match these filters.</p>{% endfor %}
+      {% if inventory.out_of_stock > out_of_stock|length %}<a href="{{ url_for('stock_maintenance') }}">Review all stock alerts</a>{% endif %}
+    </article>
+  </div>
+  <article class="panel mt-3">
+    <div class="section-head"><div><h3>Stock-in and stock-out history</h3><p class="muted">{{ stock_movement_total }} movements · selected date range</p></div><a href="{{ url_for('stock_maintenance') }}">Manage stock</a></div>
+    {% if stock_movements %}
+    <div class="table-responsive"><table class="table mobile-card-table analytics-table"><thead><tr><th>Date</th><th>Product</th><th>Type</th><th>Qty</th><th>Previous</th><th>Current</th><th>Reason / supplier</th></tr></thead><tbody>
+    {% for movement in stock_movements %}<tr><td data-label="Date">{{ movement.created_at }}</td><td data-label="Product">{{ movement.product_name }} <small>{{ movement.product_code }}</small></td><td data-label="Type">{{ movement.movement_type|replace('_',' ')|title }}</td><td data-label="Qty">{{ movement.quantity }}</td><td data-label="Previous">{{ movement.previous_stock if movement.previous_stock is not none else '—' }}</td><td data-label="Current">{{ movement.resulting_stock if movement.resulting_stock is not none else '—' }}</td><td data-label="Reason / supplier">{{ movement.note }}{% if movement.supplier %} · {{ movement.supplier }}{% endif %}</td></tr>{% endfor %}
+    </tbody></table></div>
+    {% else %}<p class="analytics-empty">No stock movements in this date range.</p>{% endif %}
+    {% if movement_page_count > 1 %}
+    <nav class="analytics-pagination" aria-label="Stock history pages">
+      <span>Page {{ filters.movement_page }} of {{ movement_page_count }}</span>
+      {% if filters.movement_page > 1 %}<a class="btn btn-outline-dark btn-sm" href="{{ url_for('reports', period=filters.period, start=filters.start, end=filters.end, product_id=filters.product_id or '', category=filters.category, page=filters.page, movement_page=filters.movement_page-1) }}">Previous</a>{% endif %}
+      {% if filters.movement_page < movement_page_count %}<a class="btn btn-outline-dark btn-sm" href="{{ url_for('reports', period=filters.period, start=filters.start, end=filters.end, product_id=filters.product_id or '', category=filters.category, page=filters.page, movement_page=filters.movement_page+1) }}">Next</a>{% endif %}
+    </nav>
+    {% endif %}
+  </article>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+const analyticsCharts = {{ {
+  'daily': {'labels': trends.daily|map(attribute='bucket')|list, 'values': trends.daily|map(attribute='revenue')|list},
+  'weekly': {'labels': trends.weekly|map(attribute='bucket')|list, 'values': trends.weekly|map(attribute='revenue')|list},
+  'monthly': {'labels': trends.monthly|map(attribute='bucket')|list, 'values': trends.monthly|map(attribute='revenue')|list},
+  'yearly': {'labels': trends.yearly|map(attribute='bucket')|list, 'values': trends.yearly|map(attribute='revenue')|list}
+}|tojson }};
+const chartOptions = {responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,ticks:{callback:value=>'₹'+Number(value).toLocaleString('en-IN')}}}};
+function renderAnalyticsChart(canvas,config){
+ const loading=canvas.parentElement.querySelector('.analytics-chart-loading');
+ if(!window.Chart){loading.textContent='Chart service is unavailable. Reload the page to try again.';loading.classList.add('is-error');return;}
+ try{new Chart(canvas,config);canvas.hidden=false;loading.remove();}
+ catch(error){console.error('Analytics chart could not be rendered.',error);loading.textContent='This chart could not be rendered. The report tables remain available.';loading.classList.add('is-error');}
+}
+for(const [key,data] of Object.entries(analyticsCharts)){
+ const canvas=document.getElementById(key+'SalesChart');
+ if(canvas)renderAnalyticsChart(canvas,{type:key==='yearly'?'bar':'line',data:{labels:data.labels,datasets:[{data:data.values,borderColor:'#b5122b',backgroundColor:key==='yearly'?'rgba(181,18,43,.78)':'rgba(181,18,43,.12)',fill:key!=='yearly',tension:.32,pointRadius:2}]},options:chartOptions});
+}
+const breakdowns=[
+ ['paymentChart',{{ payment_methods|map(attribute='method')|list|tojson }},{{ payment_methods|map(attribute='amount')|list|tojson }},'doughnut'],
+ ['categoryChart',{{ category_sales|map(attribute='category')|list|tojson }},{{ category_sales|map(attribute='revenue')|list|tojson }},'bar'],
+ ['topProductsChart',{{ top_products|map(attribute='name')|list|tojson }},{{ top_products|map(attribute='quantity_sold')|list|tojson }},'bar']
+];
+for(const [id,labels,values,type] of breakdowns){
+ const canvas=document.getElementById(id);
+ if(canvas)renderAnalyticsChart(canvas,{type,data:{labels,datasets:[{data:values,backgroundColor:['#b5122b','#292929','#777','#c9c9c9','#8c2938','#555','#a7a7a7','#d8a1aa','#383838','#e5e5e5']}]},options:{...chartOptions,plugins:{legend:{display:type==='doughnut',position:'bottom'}}}});
+}
+</script>
+{% endblock %}
